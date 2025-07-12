@@ -1,6 +1,7 @@
 // src/user.ts
 import { Rpc, RpcGroup } from "@effect/rpc";
-import { Schema } from "effect";
+import { Schema, Effect } from "effect";
+import { AuthMiddleware, Auth } from "./auth";
 
 // Define a user with an ID and name
 export class User extends Schema.Class<User>("User")({
@@ -9,8 +10,20 @@ export class User extends Schema.Class<User>("User")({
 }) {}
 
 // Define a group of RPCs for user management
-export class UserRpcs extends RpcGroup.make(
+export const UserRpcs = RpcGroup.make(
   Rpc.make("GetUser", {
+    // No payload needed for this example
     success: User,
   }),
-) {} // .middleware(AuthMiddleware) has been removed
+).middleware(AuthMiddleware);
+
+// The handler implementation can now access the Auth service
+export const RpcUserLayer = UserRpcs.toLayer({
+  GetUser: () =>
+    Effect.gen(function* () {
+      // Safely access the authenticated user from the context.
+      const { user } = yield* Auth;
+      yield* Effect.log(`Authenticated user: ${user.name}`);
+      return user;
+    }),
+});

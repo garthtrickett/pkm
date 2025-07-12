@@ -7,7 +7,7 @@ class RequestError extends Schema.Class<RequestError>("RequestError")({
 }) {}
 
 // 👇 Rpc API group shared between server and client
-export class RpcAuth extends RpcGroup.make(
+export const RpcAuth = RpcGroup.make(
   Rpc.make("SignUpRequest", {
     error: RequestError,
     success: Schema.Boolean,
@@ -16,4 +16,4 @@ export class RpcAuth extends RpcGroup.make(
       password: Schema.String,
     },
   }),
-) {}
+);
