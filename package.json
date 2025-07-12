@@ -7,10 +7,17 @@
     "dev:client": "vite",
     "dev:server": "bun run --watch bun-server.ts",
     "lint": "eslint . --ext .ts,.js --cache --fix",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "db:generate": "bun run scripts/generate-types.ts",
+    "db:migrate": "bun run src/db/migrator.ts up",
+    "db:seed": "bun run src/db/seed.ts",
+    "migrate": "bun run db:migrate && bun run db:generate && bun run db:seed",
+    "migrate:down": "bun run db/migrator.ts down"
   },
   "devDependencies": {
+    "@types/bun": "^1.2.18",
     "@types/node": "^22.8.6",
+    "@types/pg": "^8.15.4",
     "@typescript-eslint/eslint-plugin": "^8.36.0",
     "@typescript-eslint/parser": "^8.36.0",
     "concurrently": "^9.2.0",
@@ -27,6 +34,12 @@
     "@effect/platform-browser": "^0.67.12",
     "@effect/platform-bun": "^0.72.17",
     "@effect/rpc": "^0.64.13",
-    "effect": "^3.16.12"
+    "dotenv": "^17.2.0",
+    "effect": "^3.16.12",
+    "kanel": "^3.14.1",
+    "kanel-kysely": "^0.7.1",
+    "kysely": "^0.28.2",
+    "oslo": "^1.2.1",
+    "pg": "^8.16.3"
   }
 }

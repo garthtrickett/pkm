@@ -13,7 +13,7 @@ export default tseslint.config(
       "node_modules/",
       "dist/",
       "g.txt",
-      "types/generated/",
+      "src/types/generated/*",
       "*.cjs",
       "llm/",
       "vite.config.ts",
