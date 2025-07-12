@@ -4,26 +4,29 @@ import { Schema, Effect } from "effect";
 import { AuthMiddleware, Auth } from "./lib/server/auth";
 
 // Define a user with an ID and name
+// This is the shape of the data returned by the RPC
 export class User extends Schema.Class<User>("User")({
-  id: Schema.String, // User's ID as a string
-  name: Schema.String, // User's name as a string
+  id: Schema.String,
+  name: Schema.String,
 }) {}
 
-// Define a group of RPCs for user management
 export const UserRpcs = RpcGroup.make(
   Rpc.make("GetUser", {
-    // No payload needed for this example
     success: User,
+    error: Schema.Never, // Handler will provide specific error
   }),
 ).middleware(AuthMiddleware);
 
-// The handler implementation can now access the Auth service
 export const RpcUserLayer = UserRpcs.toLayer({
   GetUser: () =>
     Effect.gen(function* () {
-      // Safely access the authenticated user from the context.
       const { user } = yield* Auth;
-      yield* Effect.log(`Authenticated user: ${user.name}`);
-      return user;
+      if (!user) {
+        // This should theoretically not be hit if middleware is applied correctly,
+        // but it's good practice to handle it.
+        return yield* Effect.die(new Error("User not found in context"));
+      }
+      yield* Effect.log(`Authenticated user: ${user.email}`);
+      return new User({ id: user.id, name: user.email });
     }),
 });

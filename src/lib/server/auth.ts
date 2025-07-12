@@ -1,60 +1,160 @@
-import { Context, Schema } from "effect";
-import { RpcMiddleware } from "@effect/rpc";
-import { Effect, Layer } from "effect";
+// src/lib/server/auth.ts
+import { Effect, Layer, Option, Schema } from "effect";
+import { UserSchema } from "../shared/schemas"; 
+import { serverLog, Logger } from "./logger.server";
+import { Db } from "../../db/DbTag";
+import { Crypto } from "./crypto";
+import { generateId } from "./utils";
+import { createDate, TimeSpan } from "oslo";
+import { AuthDatabaseError } from "../../features/auth/Errors";
+import type { User } from "../shared/schemas";
+import type { Session, SessionId } from "../../types/generated/public/Session";
+import type { UserId } from "../../types/generated/public/User";
+import type { Headers } from "@effect/platform/Headers";
 
-// The authenticated user model
-export class User extends Schema.Class<User>("User")({
-  id: Schema.String,
-  name: Schema.String,
-}) {}
+// ✅ FIX: Import the shared definitions
+import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
 
-// A service tag that will hold the authenticated user
-export class Auth extends Context.Tag("Auth")<
-  Auth,
-  { readonly user: User }
->() {}
+// Re-export for convenience in other server files
+export { Auth, AuthError, AuthMiddleware };
 
-// A specific, typed error for authentication failures
-export class UnauthorizedError extends Schema.Class<UnauthorizedError>(
-  "UnauthorizedError",
-)({
-  message: Schema.String,
-}) {}
-
-// Define the middleware itself using RpcMiddleware.Tag
-export class AuthMiddleware extends RpcMiddleware.Tag<AuthMiddleware>()(
-  "AuthMiddleware",
-  {
-    wrap: true,
-    provides: Auth,
-    failure: UnauthorizedError,
-  },
-) {}
-
-// Implementation of the AuthMiddleware
-export const AuthMiddlewareLive = Layer.succeed(
+// --- LIVE IMPLEMENTATION ---
+// This layer now implements the shared AuthMiddleware tag.
+export const AuthMiddlewareLive = Layer.effect(
   AuthMiddleware,
-  ({ headers, next }) => {
-    // 1. Define an effect to validate the token
-    const validateToken = Effect.succeed(headers["authorization"]).pipe(
-      Effect.filterOrFail(
-        (header): header is string =>
-          header !== undefined && header.startsWith("Bearer "),
-        () => new UnauthorizedError({ message: "Missing or invalid token" }),
-      ),
-      Effect.map((header) => header.slice(7)),
-      Effect.filterOrFail(
-        (token) => token === "secret-token",
-        () => new UnauthorizedError({ message: "Invalid token" }),
-      ),
-      // On success, create the user
-      Effect.map(() => new User({ id: "123", name: "Sandro" })),
-    );
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const logger = yield* Logger;
 
-    // 2. Use flatMap to chain the validation with the next step
-    return Effect.flatMap(validateToken, (user) =>
-      // If validation succeeds, provide the Auth service to the `next` handler
-      Effect.provideService(next, Auth, { user }),
-    );
-  },
+    return ({ headers }) => {
+      const logic = Effect.gen(function* () {
+        const sessionIdOption = getSessionIdFromRequest({ headers });
+
+        if (Option.isNone(sessionIdOption)) {
+          return { user: null, session: null };
+        }
+        return yield* validateSessionEffect(sessionIdOption.value);
+      });
+
+      return logic.pipe(
+        Effect.catchAll((err) =>
+          serverLog("error", { error: err }, "Session validation failed").pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({ message: "Invalid session", _tag: 'Unauthorized' }),
+              ),
+            ),
+          ),
+        ),
+        Effect.provideService(Db, db),
+        Effect.provideService(Logger, logger),
+      );
+    };
+  }),
 );
+
+/* ───────────────────────────────── Helper functions ───────────────────────────────── */
+// (The rest of this file remains the same)
+
+export const getSessionIdFromRequest = (req: {
+  headers: Headers;
+}): Option.Option<string> =>
+  Option.fromNullable(req.headers["cookie"]).pipe(
+    Option.map((cookieHeader) => cookieHeader.split("; ")),
+    Option.flatMap((cookies) =>
+      Option.fromNullable(cookies.find((c) => c.startsWith("session_id="))),
+    ),
+    Option.flatMap((cookie) => Option.fromNullable(cookie.split("=")[1])),
+  );
+
+export const createSessionEffect = (
+  userId: UserId,
+): Effect.Effect<string, AuthDatabaseError, Db | Crypto> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const sessionId = yield* generateId(40);
+    const expiresAt = createDate(new TimeSpan(30, "d"));
+    yield* Effect.tryPromise({
+      try: () =>
+        db
+          .insertInto("session")
+          .values({
+            id: sessionId as SessionId,
+            user_id: userId,
+            expires_at: expiresAt,
+          })
+          .execute(),
+      catch: (cause) => new AuthDatabaseError({ cause }),
+    });
+    return sessionId;
+  });
+
+export const deleteSessionEffect = (
+  sessionId: string,
+): Effect.Effect<void, AuthDatabaseError, Db | Logger> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* serverLog(
+      "info",
+      { sessionId },
+      "Attempting to delete session from DB",
+    );
+    yield* Effect.tryPromise({
+      try: () =>
+        db
+          .deleteFrom("session")
+          .where("id", "=", sessionId as SessionId)
+          .execute(),
+      catch: (cause) => new AuthDatabaseError({ cause }),
+    });
+    yield* serverLog(
+      "info",
+      { sessionId },
+      "DB operation to delete session completed",
+    );
+  });
+
+export const validateSessionEffect = (
+  sessionId: string,
+): Effect.Effect<
+  { user: User | null; session: Session | null },
+  AuthDatabaseError,
+  Db | Logger
+> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const sessionOption = yield* Effect.tryPromise({
+      try: () =>
+        db
+          .selectFrom("session")
+          .selectAll()
+          .where("id", "=", sessionId as SessionId)
+          .executeTakeFirst(),
+      catch: (cause) => new AuthDatabaseError({ cause }),
+    }).pipe(Effect.map(Option.fromNullable));
+
+    if (Option.isNone(sessionOption)) {
+      return { user: null, session: null };
+    }
+
+    const session = sessionOption.value;
+    if (session.expires_at < new Date()) {
+      yield* deleteSessionEffect(sessionId);
+      return { user: null, session: null };
+    }
+
+    const maybeRawUser = yield* Effect.tryPromise({
+      try: () =>
+        db
+          .selectFrom("user")
+          .selectAll()
+          .where("id", "=", session.user_id)
+          .executeTakeFirst(),
+      catch: (cause) => new AuthDatabaseError({ cause }),
+    });
+
+    const user = Option.getOrNull(
+      Schema.decodeUnknownOption(UserSchema)(maybeRawUser),
+    );
+    return { user, session };
+  });

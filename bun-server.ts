@@ -3,38 +3,49 @@ import { HttpRouter } from "@effect/platform";
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Layer } from "effect";
+
+// Core Services
 import { DbLayer } from "./src/db/DbLayer";
-import { AuthMiddlewareLive } from "./src/lib/server/auth";
 import { LoggerLive } from "./src/lib/server/logger.server";
-import { RpcAuth } from "./src/lib/shared/api";
-import { RpcLog, RpcLogLayer } from "./src/log";
-import { RpcAuthLayer } from "./src/server";
-import { RpcUserLayer, UserRpcs } from "./src/user";
+import { AuthMiddlewareLive } from "./src/lib/server/auth";
+import { CryptoLive } from "./src/lib/server/crypto";
 
-// Merge all handler layers together, including the new RpcLogLayer
-const RpcHandlers = Layer.mergeAll(RpcAuthLayer, RpcUserLayer, RpcLogLayer);
+// RPC Schemas
+import { AuthRpc } from "./src/lib/shared/api";
+import { UserRpcs } from "./src/user";
+import { RpcLog } from "./src/lib/shared/log-schema";
 
-// Merge the RPC groups, including the new RpcLog group
-const AppRpcs = RpcAuth.merge(UserRpcs).merge(RpcLog);
+// RPC Handlers
+import { AuthRpcLayer } from "./src/features/auth/auth.handler";
+import { RpcUserLayer } from "./src/user";
+import { RpcLogLayer } from "./src/features/log/log.handler";
 
-// Create the complete RPC server layer from the merged groups and handlers
-const RpcLayer = RpcServer.layer(AppRpcs).pipe(
-  Layer.provide(RpcHandlers),
-  Layer.provide(AuthMiddlewareLive),
-);
+// 1. Combine all RPC handler implementations into a single layer.
+const RpcHandlers = Layer.mergeAll(AuthRpcLayer, RpcUserLayer, RpcLogLayer);
 
-// Define the protocol and serialization format
+// 2. Combine all RPC schemas into a single API definition.
+const AppRpcs = AuthRpc.merge(UserRpcs).merge(RpcLog);
+
+// 3. Create the complete RPC server layer.
+// This layer's dependency `Handler<"SignUpRequest">` is now correctly
+// satisfied by the provided `RpcHandlers` layer.
+const RpcLayer = RpcServer.layer(AppRpcs).pipe(Layer.provide(RpcHandlers));
+
+// 4. Define the HTTP transport protocol and serialization format.
 const HttpProtocol = RpcServer.layerProtocolHttp({
   path: "/api/rpc",
 }).pipe(Layer.provide(RpcSerialization.layerNdjson));
 
-// Create the main server layer, providing all global services
+// 5. Create the main server layer, providing all global services.
 const Main = HttpRouter.Default.serve().pipe(
   Layer.provide(RpcLayer),
   Layer.provide(HttpProtocol),
   Layer.provide(BunHttpServer.layer({ port: 42069 })),
+  Layer.provide(AuthMiddlewareLive),
+  Layer.provide(DbLayer),
   Layer.provide(LoggerLive),
-  Layer.provide(DbLayer), //
+  Layer.provide(CryptoLive),
 );
 
+// 6. Launch the application.
 BunRuntime.runMain(Layer.launch(Main));

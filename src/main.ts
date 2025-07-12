@@ -1,6 +1,4 @@
 // src/main.ts
-import { BrowserRuntime } from "@effect/platform-browser";
-import { mainEffect } from "./client";
 
-// Run the application using the idiomatic BrowserRuntime
-BrowserRuntime.runMain(mainEffect);
+// By importing the app-shell, we ensure the custom element is defined.
+import "./components/layouts/app-shell.ts";
