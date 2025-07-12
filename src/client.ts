@@ -1,27 +1,17 @@
 // src/client.ts
-import { FetchHttpClient, Headers } from "@effect/platform";
-import { RpcClient, RpcMiddleware, RpcSerialization } from "@effect/rpc";
+import { FetchHttpClient } from "@effect/platform";
+import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
 import { RpcAuth } from "./api";
-import { AuthMiddleware } from "./middleware";
-
-// Implement the middleware for the client
-const AuthClientLive: Layer.Layer<RpcMiddleware.ForClient<AuthMiddleware>> =
-  RpcMiddleware.layerClient(AuthMiddleware, ({ request, rpc }) =>
-    Effect.succeed({
-      ...request,
-      headers: Headers.set(request.headers, "authorization", "Bearer token"),
-    }),
-  );
 
 // Use a relative URL to let the Vite proxy handle it
 const ProtocolLive = RpcClient.layerProtocolHttp({
-  url: "/api/rpc", // Changed
+  url: "/api/rpc",
 }).pipe(
   Layer.provide([
     FetchHttpClient.layer,
     RpcSerialization.layerNdjson,
-    AuthClientLive, // Add the middleware layer
+    // AuthClientLive has been removed
   ]),
 );
 export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(

@@ -14,6 +14,7 @@ echo "📦 Bundling project files into $OUTPUT_FILE..."
 find . -path './node_modules' -prune -o \
      -path './dist' -prune -o \
      -path './.git' -prune -o \
+     -path './.vite' -prune -o \
      -name ".eslintcache" -prune -o \
      -type f -print | grep -vF "$OUTPUT_FILE" | while IFS= read -r file; do
     # Append the file path as a header to the output file
