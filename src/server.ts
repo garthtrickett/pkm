@@ -26,4 +26,4 @@ export const RpcAuthLayer = RpcAuth.toLayer({
       yield* Effect.log(params.email, params.password);
       return true;
     }),
-}).pipe(Layer.provide(LoggerLayer), Layer.provide(AuthLive)); // Provide the new AuthLive middleware layer
+}).pipe(Layer.provide(LoggerLayer)); // Provide the new AuthLive middleware layer

@@ -1,23 +1,32 @@
-// src/main.ts
-import { Effect } from "effect";
-import { mainEffect } from "./client"; // Import the effect
+// src/client.ts
+import { FetchHttpClient } from "@effect/platform";
+import { RpcClient, RpcSerialization } from "@effect/rpc";
+import { Effect, Layer } from "effect";
+import { RpcAuth } from "./api";
 
-const appDiv = document.getElementById("app")!;
+// Use a relative URL to let the Vite proxy handle it
+const ProtocolLive = RpcClient.layerProtocolHttp({
+  url: "/api/rpc", // Changed
+}).pipe(Layer.provide([FetchHttpClient.layer, RpcSerialization.layerNdjson]));
 
-// Run the effect and update the DOM
-Effect.runPromise(mainEffect).then(
-  (response) => {
-    appDiv.innerText = `✅ Server responded: ${response}`;
-    console.info("Success:", response);
+export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
+  "RpcAuthClient",
+  {
+    dependencies: [ProtocolLive],
+    scoped: RpcClient.make(RpcAuth),
   },
-  (error) => {
-    // Safely check for the _tag property before accessing it.
-    const tag =
-      typeof error === "object" && error && "_tag" in error
-        ? String((error as { _tag: unknown })._tag)
-        : "UnknownError";
+) {}
 
-    appDiv.innerText = `❌ Error: ${tag}`;
-    console.error("Error:", error);
-  },
-);
+// Export the main effect instead of running it
+export const mainEffect = Effect.gen(function* () {
+  // Renamed and exported
+  const client = yield* RpcAuthClient;
+  return yield* client
+    .SignUpRequest({
+      email: "test@test.com",
+      password: "test",
+    })
+    .pipe(
+      Effect.tapError((requestError) => Effect.log(requestError.errorMessage)),
+    );
+}).pipe(Effect.provide(RpcAuthClient.Default));

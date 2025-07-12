@@ -1,0 +1,40 @@
+{
+  "hash": "fe19613b",
+  "configHash": "ba755962",
+  "lockfileHash": "fe83578e",
+  "browserHash": "1fa1c541",
+  "optimized": {
+    "effect": {
+      "src": "../../node_modules/effect/dist/esm/index.js",
+      "file": "effect.js",
+      "fileHash": "1e4c8421",
+      "needsInterop": false
+    },
+    "@effect/platform": {
+      "src": "../../node_modules/@effect/platform/dist/esm/index.js",
+      "file": "@effect_platform.js",
+      "fileHash": "c525d26f",
+      "needsInterop": false
+    },
+    "@effect/rpc": {
+      "src": "../../node_modules/@effect/rpc/dist/esm/index.js",
+      "file": "@effect_rpc.js",
+      "fileHash": "aa7fa219",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-SNTQKOXV": {
+      "file": "chunk-SNTQKOXV.js"
+    },
+    "chunk-2YJSV6UP": {
+      "file": "chunk-2YJSV6UP.js"
+    },
+    "chunk-EX52NJ6G": {
+      "file": "chunk-EX52NJ6G.js"
+    },
+    "chunk-6XTNYBYF": {
+      "file": "chunk-6XTNYBYF.js"
+    }
+  }
+}
