@@ -2,7 +2,7 @@
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 
-class RequestError extends Schema.Class<RequestError>("RequestError")({
+export class RequestError extends Schema.Class<RequestError>("RequestError")({
   errorMessage: Schema.String,
 }) {}
 

@@ -1,15 +1,16 @@
 // src/client.ts
-import { BrowserHttpClient } from "@effect/platform-browser"; // Changed import
+import { BrowserHttpClient } from "@effect/platform-browser";
 import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
-import { RpcAuth } from "./api";
+import { RequestError, RpcAuth } from "./api";
+import { RpcLog } from "./log-schema"; // <-- FIX: Import from the schema-only file
+import type { LogLevel } from "./lib/shared/logConfig";
 
-// Use the browser-specific XMLHttpRequest layer
 const ProtocolLive = RpcClient.layerProtocolHttp({
   url: "/api/rpc",
 }).pipe(
   Layer.provide([
-    BrowserHttpClient.layerXMLHttpRequest, // Use the idiomatic browser client
+    BrowserHttpClient.layerXMLHttpRequest,
     RpcSerialization.layerNdjson,
   ]),
 );
@@ -22,12 +23,36 @@ export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
   },
 ) {}
 
-// The main effect now includes the logic to update the DOM
+export class RpcLogClient extends Effect.Service<RpcLogClient>()(
+  "RpcLogClient",
+  {
+    dependencies: [ProtocolLive],
+    scoped: RpcClient.make(RpcLog),
+  },
+) {}
+
+// The "log" RPC can only fail with a transport error.
+export const clientLog = (
+  level: Exclude<LogLevel, "silent">,
+  ...args: unknown[]
+): Effect.Effect<void, Error, RpcLogClient> => // <-- FIX: Use correct error type
+  Effect.gen(function* () {
+    const client = yield* RpcLogClient;
+    yield* client.log({ level, args }).pipe(
+      Effect.catchAll((err) =>
+        Effect.sync(() => console.error("Failed to send log:", err)),
+      ),
+      Effect.forkDaemon,
+    );
+  });
+
+// The main application effect
 export const mainEffect = Effect.gen(function* () {
   const client = yield* RpcAuthClient;
   const appDiv = document.getElementById("app")!;
 
-  // Use Effect.match to handle success and failure declaratively
+  yield* clientLog("info", "Client app started. Preparing RPC call...");
+
   yield* client
     .SignUpRequest({
       email: "test@test.com",
@@ -35,20 +60,21 @@ export const mainEffect = Effect.gen(function* () {
     })
     .pipe(
       Effect.match({
-        onFailure: (error) => {
-          // This logic now lives inside the effect
+        // FIX: Handle the union of the business error and the transport error.
+        onFailure: (error: RequestError | Error) => {
           const tag =
             typeof error === "object" && error && "_tag" in error
               ? String((error as { _tag: unknown })._tag)
               : "UnknownError";
           appDiv.innerText = `❌ Error: ${tag}`;
-          console.error("Error:", error);
+          return clientLog("error", "SignUpRequest failed", error);
         },
         onSuccess: (response) => {
-          // This logic also lives inside the effect
           appDiv.innerText = `✅ Server responded: ${response}`;
-          console.info("Success:", response);
+          return clientLog("info", "SignUpRequest succeeded", { response });
         },
       }),
     );
-}).pipe(Effect.provide(RpcAuthClient.Default));
+}).pipe(
+  Effect.provide(Layer.merge(RpcAuthClient.Default, RpcLogClient.Default)),
+);
