@@ -9,6 +9,7 @@ export default tseslint.config(
   // 1. Global ignores [cite: 381]
   {
     ignores: [
+      ".vite/",
       "node_modules/",
       "dist/",
       "g.txt",

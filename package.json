@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@effect/platform": "^0.87.12",
+    "@effect/platform-browser": "^0.67.12",
     "@effect/platform-bun": "^0.72.17",
     "@effect/rpc": "^0.64.13",
     "effect": "^3.16.12"

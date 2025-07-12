@@ -1,19 +1,19 @@
 // src/client.ts
-import { FetchHttpClient } from "@effect/platform";
+import { BrowserHttpClient } from "@effect/platform-browser"; // Changed import
 import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
 import { RpcAuth } from "./api";
 
-// Use a relative URL to let the Vite proxy handle it
+// Use the browser-specific XMLHttpRequest layer
 const ProtocolLive = RpcClient.layerProtocolHttp({
   url: "/api/rpc",
 }).pipe(
   Layer.provide([
-    FetchHttpClient.layer,
+    BrowserHttpClient.layerXMLHttpRequest, // Use the idiomatic browser client
     RpcSerialization.layerNdjson,
-    // AuthClientLive has been removed
   ]),
 );
+
 export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
   "RpcAuthClient",
   {
@@ -22,16 +22,33 @@ export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
   },
 ) {}
 
-// Export the main effect instead of running it
+// The main effect now includes the logic to update the DOM
 export const mainEffect = Effect.gen(function* () {
-  // Renamed and exported
   const client = yield* RpcAuthClient;
-  return yield* client
+  const appDiv = document.getElementById("app")!;
+
+  // Use Effect.match to handle success and failure declaratively
+  yield* client
     .SignUpRequest({
       email: "test@test.com",
       password: "test",
     })
     .pipe(
-      Effect.tapError((requestError) => Effect.log(requestError.errorMessage)),
+      Effect.match({
+        onFailure: (error) => {
+          // This logic now lives inside the effect
+          const tag =
+            typeof error === "object" && error && "_tag" in error
+              ? String((error as { _tag: unknown })._tag)
+              : "UnknownError";
+          appDiv.innerText = `❌ Error: ${tag}`;
+          console.error("Error:", error);
+        },
+        onSuccess: (response) => {
+          // This logic also lives inside the effect
+          appDiv.innerText = `✅ Server responded: ${response}`;
+          console.info("Success:", response);
+        },
+      }),
     );
 }).pipe(Effect.provide(RpcAuthClient.Default));
