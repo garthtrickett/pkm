@@ -8,10 +8,16 @@ const appDiv = document.getElementById("app")!;
 Effect.runPromise(mainEffect).then(
   (response) => {
     appDiv.innerText = `✅ Server responded: ${response}`;
-    console.log("Success:", response);
+    console.info("Success:", response);
   },
   (error) => {
-    appDiv.innerText = `❌ Error: ${error._tag}`;
+    // Safely check for the _tag property before accessing it.
+    const tag =
+      typeof error === "object" && error && "_tag" in error
+        ? String((error as { _tag: unknown })._tag)
+        : "UnknownError";
+
+    appDiv.innerText = `❌ Error: ${tag}`;
     console.error("Error:", error);
   },
 );
