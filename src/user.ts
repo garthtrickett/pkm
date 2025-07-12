@@ -1,7 +1,7 @@
 // src/user.ts
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema, Effect } from "effect";
-import { AuthMiddleware, Auth } from "./auth";
+import { AuthMiddleware, Auth } from "./lib/server/auth";
 
 // Define a user with an ID and name
 export class User extends Schema.Class<User>("User")({

@@ -1,7 +1,7 @@
 // src/log.ts
 import { Effect } from "effect";
 import { Logger } from "./lib/server/logger.server"; // Server-only import
-import { RpcLog } from "./log-schema"; // Import the schema definition
+import { RpcLog } from "./lib/shared/log-schema"; // Import the schema definition
 
 // The handler implementation for the RpcLog group
 export const RpcLogLayer = RpcLog.toLayer({
@@ -14,4 +14,4 @@ export const RpcLogLayer = RpcLog.toLayer({
 });
 
 // Re-export the schema for convenient use in bun-server.ts
-export { RpcLog } from "./log-schema";
+export { RpcLog } from "./lib/shared/log-schema";

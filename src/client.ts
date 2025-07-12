@@ -2,8 +2,8 @@
 import { BrowserHttpClient } from "@effect/platform-browser";
 import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
-import { RequestError, RpcAuth } from "./api";
-import { RpcLog } from "./log-schema"; // <-- FIX: Import from the schema-only file
+import { RequestError, RpcAuth } from "./lib/shared/api";
+import { RpcLog } from "./lib/shared/log-schema"; // <-- FIX: Import from the schema-only file
 import type { LogLevel } from "./lib/shared/logConfig";
 
 const ProtocolLive = RpcClient.layerProtocolHttp({

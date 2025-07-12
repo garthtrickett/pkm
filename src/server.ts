@@ -1,6 +1,6 @@
 // src/server.ts
 import { Effect } from "effect";
-import { RpcAuth } from "./api";
+import { RpcAuth } from "./lib/shared/api";
 
 // The temporary LoggerLayer has been removed.
 
