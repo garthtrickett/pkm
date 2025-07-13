@@ -1,29 +1,15 @@
 // src/lib/client/stores/authStore.ts
 import { signal } from "@preact/signals-core";
 import { Data, Effect, Layer, Queue, Stream } from "effect";
-import { FetchHttpClient } from "@effect/platform";
-import { RpcClient, RpcSerialization } from "@effect/rpc";
 import type { User } from "../../../types/generated/public/User";
-import { ClientLive, runClientUnscoped } from "../runtime";
-import { AuthError, AuthRpc } from "../../shared/api";
-import { clientLog, RpcLogClient } from "../clientLog";
+import { runClientUnscoped } from "../runtime";
+import { AuthError } from "../../shared/api";
+import { clientLog } from "../clientLog";
+import { ClientLive } from "../runtime";
+// ✅ Import the RPC client from its new location
+import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "../rpc";
 
-// --- RPC Client Service Definition ---
-const AuthProtocolLive = RpcClient.layerProtocolHttp({
-  url: "/api/rpc",
-}).pipe(Layer.provide(RpcSerialization.layerNdjson));
-
-export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
-  "RpcAuthClient",
-  {
-    dependencies: [AuthProtocolLive],
-    scoped: RpcClient.make(AuthRpc),
-  },
-) {}
-
-const RpcAuthClientLive = RpcAuthClient.Default.pipe(
-  Layer.provide(FetchHttpClient.layer),
-);
+// --- RPC Client Service Definition (REMOVED FROM HERE) ---
 
 // --- Model & State ---
 export interface AuthModel {
@@ -106,13 +92,8 @@ const handleAuthAction = (
           "[authStore] Awaiting RPC call: authClient.me()",
         );
 
-        // ✅ ✅ ✅ THE FIX IS HERE ✅ ✅ ✅
-        // We no longer fork the effect. We `yield*` it, making this step
-        // "blocking" within the action handler. The handler will not complete
-        // until the RPC call succeeds or fails.
         const result = yield* Effect.either(authClient.me());
 
-        // Now we can handle the result directly and synchronously propose the next action.
         if (result._tag === "Right") {
           yield* clientLog(
             "info",
@@ -137,7 +118,6 @@ const handleAuthAction = (
       }
 
       case "LOGOUT_START": {
-        // This logic can also be simplified, though it wasn't the source of the bug.
         yield* Effect.either(authClient.logout());
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
@@ -149,8 +129,6 @@ const handleAuthAction = (
 const RpcClientsLive = Layer.merge(RpcAuthClientLive, RpcLogClient.Default);
 
 const authProcess = Stream.fromQueue(_actionQueue).pipe(
-  // The `runForEach` now correctly waits for each action handler to fully complete,
-  // including the RPC call, before processing the next action.
   Stream.runForEach((action) =>
     handleAuthAction(action).pipe(
       Effect.provide(RpcClientsLive),

@@ -22,6 +22,18 @@ const UnprotectedAuthRpc = RpcGroup.make(
       password: Schema.String,
     },
   }),
+  // Add the login definition here
+  Rpc.make("login", {
+    success: Schema.Struct({
+      user: UserSchema,
+      sessionId: Schema.String,
+    }),
+    error: AuthError,
+    payload: {
+      email: Schema.String,
+      password: Schema.String,
+    },
+  }),
 );
 
 // Group for routes that ARE protected by authentication.
@@ -36,6 +48,5 @@ const ProtectedAuthRpc = RpcGroup.make(
   }),
 ).middleware(AuthMiddleware);
 
-// The final exported group merges them. This structure makes it clear
-// to the server which middleware applies to which procedures.
+// The final exported group merges them.
 export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);

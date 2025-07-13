@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "target": "es2022",

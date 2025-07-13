@@ -1,8 +1,10 @@
 // src/lib/client/runtime.ts
 import { Cause, Context, Effect, Exit, Layer, Runtime, Scope } from "effect";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
-import { RpcLogClient, clientLog } from "./clientLog";
+import { clientLog } from "./clientLog";
 import { LocationLive, type LocationService } from "./LocationService";
+// ✅ Import from the new, non-circular location
+import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "./rpc";
 
 // --- Service Definitions ---
 
@@ -42,13 +44,15 @@ export type ClientContext =
   | LocationService
   | RpcLogClient
   | ViewManager
-  | HttpClient.HttpClient;
+  | HttpClient.HttpClient
+  | RpcAuthClient;
 
 export const ClientLive: Layer.Layer<ClientContext, never, never> =
   Layer.mergeAll(
     LocationLive,
     RpcLogClient.Default,
     ViewManagerLive,
+    RpcAuthClientLive,
   ).pipe(
     Layer.provide(FetchHttpClient.layer),
     Layer.merge(FetchHttpClient.layer),
@@ -99,7 +103,6 @@ const setupGlobalErrorLogger = () => {
       const error = Cause.isCause(errorCandidate)
         ? Cause.squash(errorCandidate)
         : errorCandidate;
-
       runClientUnscoped(
         clientLog(
           "error",
