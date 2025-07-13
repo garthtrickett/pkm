@@ -1,35 +1,39 @@
 // src/lib/client/lifecycle.ts
-import { Chunk, Context, Effect, Layer, Stream } from "effect";
+import { Chunk, Stream, Effect } from "effect";
+import { authState, type AuthModel } from "./stores/authStore";
 import { clientLog, RpcLogClient } from "./clientLog";
 import { LocationService } from "./LocationService";
-import { type AuthModel, authState } from "./stores/authStore";
-import { runClientUnscoped } from "./runtime"; // Import the runtime utility
 
-export const authStream: Stream.Stream<AuthModel, Error, RpcLogClient> = Stream.async<AuthModel>(
-  (emit) => {
-    runClientUnscoped(clientLog("debug", "authStream subscribed."));
-    // ✅ FIX: Use 'void' to explicitly ignore the promise returned by emit.
+export const authStream: Stream.Stream<AuthModel, Error, RpcLogClient> =
+  Stream.async<AuthModel>((emit) => {
+    // Initial emit
     void emit(Effect.succeed(Chunk.of(authState.value)));
-    
+    // Subscribe to future changes
     const unsubscribe = authState.subscribe((value) => {
-      // ✅ FIX: Use 'void' here as well.
       void emit(Effect.succeed(Chunk.of(value)));
     });
-
+    // Return the cleanup function
     return Effect.sync(() => {
-      runClientUnscoped(clientLog("debug", "authStream unsubscribed."));
       unsubscribe();
     });
-  },
-).pipe(
-  Stream.tap((value) =>
-    clientLog("debug", `authStream emitting status: ${value.status}`, value.user?.id, "lifecycle")
-  ),
-  Stream.changesWith(
-    (a: AuthModel, b: AuthModel) =>
-      a.status === b.status && a.user?.id === b.user?.id,
-  ),
-);
+  }).pipe(
+    Stream.tap((value) =>
+      clientLog(
+        "debug",
+        `[lifecycle] RAW authStream EMIT`,
+        {
+          status: value.status,
+          userId: value.user?.id,
+          source: "authStream:PRE_CHANGES",
+        },
+      ),
+    ),
+    // ✅ FIX: Use changesWith for explicit comparison.
+    // This will only emit a new value if the status or the user's logged-in state changes.
+    Stream.changesWith(
+      (a, b) => a.status === b.status && a.user?.id === b.user?.id,
+    ),
+  );
 
 export const appStateStream: Stream.Stream<
   { path: string; auth: AuthModel },
@@ -44,34 +48,14 @@ export const appStateStream: Stream.Stream<
   Stream.map(([path, auth]) => ({ path, auth })),
   Stream.tap((state) =>
     clientLog(
-      "debug",
-      `New app state: { path: "${state.path}", auth: "${state.auth.status}" }`,
-      state.auth.user?.id,
-      "AppStateStream",
+      "info",
+      `[lifecycle] New app state emitted (POST-CHANGES)`,
+      {
+        path: state.path,
+        authStatus: state.auth.status,
+        userId: state.auth.user?.id,
+        source: "AppStateStream",
+      },
     ),
   ),
 );
-
-export class ViewManager extends Context.Tag("ViewManager")<
-  ViewManager,
-  {
-    readonly set: (cleanup: (() => void) | undefined) => Effect.Effect<void>;
-    readonly cleanup: () => Effect.Effect<void>;
-  }
->() {}
-
-export const ViewManagerLive = Layer.sync(ViewManager, () => {
-  let currentCleanup: (() => void) | undefined = undefined;
-  return ViewManager.of({
-    set: (cleanup) => Effect.sync(() => (currentCleanup = cleanup)),
-    cleanup: () =>
-      Effect.sync(() => {
-        if (currentCleanup) {
-          currentCleanup();
-          currentCleanup = undefined;
-        }
-      }),
-  });
-});
-
-

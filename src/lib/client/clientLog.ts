@@ -1,19 +1,15 @@
-// src/client.ts
-import { BrowserHttpClient } from "@effect/platform-browser";
+// src/lib/client/clientLog.ts
 import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
-import { RpcLog } from "../shared/log-schema"; // <-- FIX: Import from the schema-only file
+import { RpcLog } from "../shared/log-schema";
 import type { LogLevel } from "../shared/logConfig";
 
 const ProtocolLive = RpcClient.layerProtocolHttp({
   url: "/api/rpc",
 }).pipe(
-  Layer.provide([
-    BrowserHttpClient.layerXMLHttpRequest,
-    RpcSerialization.layerNdjson,
-  ]),
+  // Use the standard FetchHttpClient. It will be provided globally by ClientLive.
+  Layer.provide(RpcSerialization.layerNdjson),
 );
-
 
 export class RpcLogClient extends Effect.Service<RpcLogClient>()(
   "RpcLogClient",
@@ -23,11 +19,10 @@ export class RpcLogClient extends Effect.Service<RpcLogClient>()(
   },
 ) {}
 
-// The "log" RPC can only fail with a transport error.
 export const clientLog = (
   level: Exclude<LogLevel, "silent">,
   ...args: unknown[]
-): Effect.Effect<void, Error, RpcLogClient> => // <-- FIX: Use correct error type
+): Effect.Effect<void, Error, RpcLogClient> =>
   Effect.gen(function* () {
     const client = yield* RpcLogClient;
     yield* client.log({ level, args }).pipe(
@@ -37,4 +32,3 @@ export const clientLog = (
       Effect.forkDaemon,
     );
   });
-

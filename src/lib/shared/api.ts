@@ -2,15 +2,8 @@
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { UserSchema } from "./schemas";
-
-// ✅ FIX: Import from the new shared file, not the server implementation.
-// This prevents server-side code (like the logger) from being bundled in the client.
 import { AuthMiddleware, AuthError } from "./auth";
 
-// --- Error Schemas ---
-
-// This error schema is already defined in the new shared/auth.ts,
-// but we re-export it here for consumers of the API layer to have a single import point.
 export { AuthError };
 
 export class RequestError extends Schema.Class<RequestError>("RequestError")({
@@ -19,8 +12,8 @@ export class RequestError extends Schema.Class<RequestError>("RequestError")({
 
 // --- RPC Definitions ---
 
-// Group for routes that DO NOT require authentication.
-const AuthRpcUnprotected = RpcGroup.make(
+// Group for routes that are explicitly unprotected.
+const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("SignUpRequest", {
     error: RequestError,
     success: Schema.Boolean,
@@ -31,8 +24,8 @@ const AuthRpcUnprotected = RpcGroup.make(
   }),
 );
 
-// Group for routes that ARE protected by the authentication middleware.
-const AuthRpcProtected = RpcGroup.make(
+// Group for routes that ARE protected by authentication.
+const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("me", {
     success: UserSchema,
     error: AuthError,
@@ -41,8 +34,8 @@ const AuthRpcProtected = RpcGroup.make(
     success: Schema.Void,
     error: AuthError,
   }),
-).middleware(AuthMiddleware); // This is now safe as AuthMiddleware is a shared definition.
+).middleware(AuthMiddleware);
 
-// A single, combined group for the entire auth API.
-// This is what the server and client will reference.
-export const AuthRpc = AuthRpcUnprotected.merge(AuthRpcProtected);
+// The final exported group merges them. This structure makes it clear
+// to the server which middleware applies to which procedures.
+export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);

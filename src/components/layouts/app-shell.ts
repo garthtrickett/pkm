@@ -1,14 +1,13 @@
 // src/components/layouts/app-shell.ts
 import { render, html } from "lit-html";
 import { Stream, Effect, Fiber } from "effect";
-import { appStateStream, ViewManager } from "../../lib/client/lifecycle";
+import { appStateStream } from "../../lib/client/lifecycle";
 import { matchRoute, navigate } from "../../lib/client/router";
 import { AppLayout } from "./AppLayout";
 import { clientLog } from "../../lib/client/clientLog";
-import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime"; // Import runClientUnscoped
+import { runClientPromise, runClientUnscoped, ViewManager } from "../../lib/client/runtime";
 import { type AuthModel } from "../../lib/client/stores/authStore";
 
-// This effect now correctly declares all the services it needs in its R type
 const processStateChange = (
   appRoot: HTMLElement,
   { path, auth }: { path: string; auth: AuthModel },
@@ -16,27 +15,45 @@ const processStateChange = (
   Effect.gen(function* () {
     const viewManager = yield* ViewManager;
 
+    yield* clientLog(
+      "info",
+      "[app-shell] processStateChange triggered",
+      { path, authStatus: auth.status },
+    );
+
     if (auth.status === "initializing" || auth.status === "authenticating") {
+      yield* clientLog("debug", "[app-shell] Rendering loading state.");
       const loader = html`<div
         class="flex min-h-screen items-center justify-center"
       >
         <p>Loading...</p>
       </div>`;
-      yield* Effect.sync(() => render(loader, appRoot));
-      return yield* Effect.never;
+      // FIX: This should not return Effect.never
+      return yield* Effect.sync(() => render(loader, appRoot));
     }
 
+    yield* clientLog("debug", "[app-shell] Matching route for path:", path);
     const route = yield* matchRoute(path);
 
     if (route.meta.requiresAuth && auth.status === "unauthenticated") {
-      // navigate now requires RpcLogClient, which will be provided by the runtime
+      yield* clientLog(
+        "warn",
+        "[app-shell] Route requires auth, but user is unauthenticated. Navigating to /login.",
+      );
       return yield* navigate("/login");
     }
 
     if (auth.status === "authenticated" && route.meta.isPublicOnly) {
+      yield* clientLog(
+        "warn",
+        "[app-shell] Route is public-only, but user is authenticated. Navigating to /.",
+      );
       return yield* navigate("/");
     }
 
+    yield* clientLog("debug", "[app-shell] Rendering matched route view:", {
+      pattern: route.pattern.toString(),
+    });
     yield* viewManager.cleanup();
     const viewResult = route.view(...route.params);
     const pageTemplate =
@@ -46,15 +63,15 @@ const processStateChange = (
     const pageCleanup =
       viewResult instanceof HTMLElement ? undefined : viewResult.cleanup;
     yield* viewManager.set(pageCleanup);
-    yield* Effect.sync(() => render(AppLayout({ children: pageTemplate }), appRoot));
+    yield* Effect.sync(() =>
+      render(AppLayout({ children: pageTemplate }), appRoot),
+    );
   });
 
 export class AppShell extends HTMLElement {
   private mainFiber?: Fiber.RuntimeFiber<void, unknown>;
 
   connectedCallback() {
-    // We no longer need to build a layer here.
-    // The main stream simply declares its dependencies.
     const mainAppStream = appStateStream.pipe(
       Stream.flatMap(
         (state) => Stream.fromEffect(processStateChange(this, state)),
@@ -62,24 +79,18 @@ export class AppShell extends HTMLElement {
       ),
     );
 
-    // ✅ FIX: We use runClientUnscoped which automatically provides ALL client
-    // dependencies defined in `runtime.ts` to the stream.
-    // This includes LocationService, RpcLogClient, and ViewManager.
     this.mainFiber = runClientUnscoped(Stream.runDrain(mainAppStream));
 
-    // Log after starting the fiber.
     runClientUnscoped(
       clientLog("info", "<app-shell> connected. Main app stream started."),
     );
   }
 
   disconnectedCallback() {
-    // Log before interrupting.
     runClientUnscoped(
       clientLog("warn", "<app-shell> disconnected. Interrupting main fiber."),
     );
     if (this.mainFiber) {
-      // runClientPromise is fine here, as it also uses the global runtime.
       void runClientPromise(Fiber.interrupt(this.mainFiber));
     }
   }

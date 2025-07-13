@@ -1,10 +1,9 @@
 // src/features/auth/auth.handler.ts
 import { Effect } from "effect";
-import { AuthRpc, AuthError } from "../../lib/shared/api";
+import { AuthRpc } from "../../lib/shared/api";
 import { Auth, deleteSessionEffect } from "../../lib/server/auth";
 import { serverLog } from "../../lib/server/logger.server";
 
-// This layer provides handlers for all procedures defined in the AuthRpc group.
 export const AuthRpcLayer = AuthRpc.toLayer({
   // Unprotected handler for signing up
   SignUpRequest: (params) =>
@@ -26,33 +25,26 @@ export const AuthRpcLayer = AuthRpc.toLayer({
   // Protected handler to get the current user
   me: () =>
     Effect.gen(function* () {
-      const auth = yield* Auth;
-      if (!auth.user) {
-        return yield* Effect.fail(
-          new AuthError({
-            _tag: "Unauthorized",
-            message: "Authentication required",
-          }),
-        );
-      }
-      return auth.user;
+      // ✅ FIX: We can now safely assume `user` exists because the middleware
+      // would have failed the request if it didn't.
+      const { user } = yield* Auth;
+      // The `if (!user)` check is now redundant and can be removed.
+      return user!;
     }),
 
   // Protected handler for logging out
   logout: () =>
     Effect.gen(function* () {
-      const auth = yield* Auth;
-      if (auth.session) {
-        yield* deleteSessionEffect(auth.session.id).pipe(
-          Effect.catchAll((err) =>
-            serverLog(
-              "error",
-              { error: err },
-              "Failed to delete session on logout",
-            ),
+      const { session } = yield* Auth;
+      // ✅ FIX: We can assume session exists for the same reason.
+      yield* deleteSessionEffect(session!.id).pipe(
+        Effect.catchAll((err) =>
+          serverLog(
+            "error",
+            { error: err },
+            "Failed to delete session on logout",
           ),
-        );
-      }
-      // No return value needed as the RPC success is Schema.Void
+        ),
+      );
     }),
 });

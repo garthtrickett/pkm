@@ -1,50 +1,107 @@
 // src/lib/server/auth.ts
-import { Effect, Layer, Option, Schema } from "effect";
-import { UserSchema } from "../shared/schemas"; 
+import {  Effect, Layer, Option, Schema } from "effect";
 import { serverLog, Logger } from "./logger.server";
 import { Db } from "../../db/DbTag";
 import { Crypto } from "./crypto";
 import { generateId } from "./utils";
 import { createDate, TimeSpan } from "oslo";
 import { AuthDatabaseError } from "../../features/auth/Errors";
-import type { User } from "../shared/schemas";
+import { UserSchema, type User } from "../shared/schemas";
 import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { UserId } from "../../types/generated/public/User";
-import type { Headers } from "@effect/platform/Headers";
-
-// ✅ FIX: Import the shared definitions
+import { Headers } from "@effect/platform/Headers";
 import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
 
 // Re-export for convenience in other server files
 export { Auth, AuthError, AuthMiddleware };
 
 // --- LIVE IMPLEMENTATION ---
-// This layer now implements the shared AuthMiddleware tag.
 export const AuthMiddlewareLive = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
     const db = yield* Db;
     const logger = yield* Logger;
 
-    return ({ headers }) => {
+    return ({ headers, clientId, rpc }) => {
       const logic = Effect.gen(function* () {
+        yield* serverLog(
+          "debug",
+          { clientId, rpc: rpc._tag },
+          "AuthMiddleware triggered",
+        );
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
         if (Option.isNone(sessionIdOption)) {
-          return { user: null, session: null };
+          yield* serverLog(
+            "debug",
+            { clientId, rpc: rpc._tag },
+            "No session cookie found, failing middleware.",
+          );
+
+          // ✅ ADDED THIS LOG FOR EMPHASIS
+          yield* serverLog(
+            "warn",
+            { clientId, rpc: rpc._tag },
+            "AuthMiddleware FINAL DECISION: Failing with Unauthorized (No Session).",
+          );
+
+          return yield* Effect.fail(
+            new AuthError({
+              _tag: "Unauthorized",
+              message: "No session cookie provided",
+            }),
+          );
         }
-        return yield* validateSessionEffect(sessionIdOption.value);
+
+        const sessionId = sessionIdOption.value;
+        yield* serverLog(
+          "debug",
+          { clientId, sessionId, rpc: rpc._tag },
+          "Session cookie found, validating.",
+        );
+
+        const { user, session } = yield* validateSessionEffect(sessionId);
+
+        if (!user || !session) {
+          yield* serverLog(
+            "warn",
+            { clientId, sessionId, rpc: rpc._tag },
+            "Session validation failed (invalid/expired), failing middleware.",
+          );
+          return yield* Effect.fail(
+            new AuthError({
+              _tag: "Unauthorized",
+              message: "Invalid or expired session",
+            }),
+          );
+        }
+
+        yield* serverLog(
+          "info",
+          { clientId, userId: user.id, rpc: rpc._tag },
+          "Session validated successfully. Providing Auth service.",
+        );
+        return { user, session };
       });
 
       return logic.pipe(
         Effect.catchAll((err) =>
-          serverLog("error", { error: err }, "Session validation failed").pipe(
-            Effect.andThen(
-              Effect.fail(
-                new AuthError({ message: "Invalid session", _tag: 'Unauthorized' }),
+          err instanceof AuthDatabaseError ?
+            serverLog(
+              "error",
+              { error: err, clientId, rpc: rpc._tag },
+              "Internal database error during session validation.",
+            ).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new AuthError({
+                    _tag: "InternalServerError",
+                    message: "An internal error occurred during authentication.",
+                  }),
+                ),
               ),
-            ),
-          ),
+            ) :
+            Effect.fail(err)
         ),
         Effect.provideService(Db, db),
         Effect.provideService(Logger, logger),
@@ -54,8 +111,6 @@ export const AuthMiddlewareLive = Layer.effect(
 );
 
 /* ───────────────────────────────── Helper functions ───────────────────────────────── */
-// (The rest of this file remains the same)
-
 export const getSessionIdFromRequest = (req: {
   headers: Headers;
 }): Option.Option<string> =>
