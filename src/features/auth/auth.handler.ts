@@ -2,22 +2,25 @@
 import { Effect } from "effect";
 import { AuthRpc } from "../../lib/shared/api";
 import { Auth, deleteSessionEffect } from "../../lib/server/auth";
-import { serverLog } from "../../lib/server/logger.server";
 
 export const AuthRpcLayer = AuthRpc.toLayer({
   // Unprotected handler for signing up
   SignUpRequest: (params) =>
     Effect.gen(function* () {
-      yield* serverLog(
-        "info",
-        {},
-        `Handling SignUpRequest for email: ${params.email}`,
-      ).pipe(
+      // The `params` object contains a password, which is sensitive.
+      // We explicitly pull out only the fields we want to log.
+      const safeLogParams = { email: params.email };
+
+      // Pass the structured data as the second argument to `logInfo`.
+      yield* Effect.logInfo(safeLogParams, "Handling SignUpRequest").pipe(
+        // You can still chain additional annotations for context.
         Effect.annotateLogs({
+          // We can log the password length, but NOT the password itself.
           passwordLength: params.password.length,
           module: "RpcAuth",
         }),
       );
+
       // In a real app, you would add user creation logic here.
       return true;
     }),
@@ -25,10 +28,14 @@ export const AuthRpcLayer = AuthRpc.toLayer({
   // Protected handler to get the current user
   me: () =>
     Effect.gen(function* () {
-      // ✅ FIX: We can now safely assume `user` exists because the middleware
-      // would have failed the request if it didn't.
       const { user } = yield* Auth;
-      // The `if (!user)` check is now redundant and can be removed.
+      // The entire `user` object contains `password_hash`, which we don't want
+      // to leak. We create a new object with only the safe fields.
+      const safeUserLog = {
+        userId: user!.id,
+        userEmail: user!.email
+      };
+      yield* Effect.logDebug(safeUserLog, `'me' request successful`);
       return user!;
     }),
 
@@ -36,14 +43,16 @@ export const AuthRpcLayer = AuthRpc.toLayer({
   logout: () =>
     Effect.gen(function* () {
       const { session } = yield* Auth;
-      // ✅ FIX: We can assume session exists for the same reason.
+      // The session ID can be considered sensitive. We log that a logout is happening
+      // without necessarily logging the ID itself, as the trace context already identifies the request.
+      yield* Effect.logInfo({ userId: session!.user_id }, `User initiated logout`);
+
       yield* deleteSessionEffect(session!.id).pipe(
         Effect.catchAll((err) =>
-          serverLog(
-            "error",
-            { error: err },
-            "Failed to delete session on logout",
-          ),
+          // The error object is passed as the cause, which is the correct
+          // way to handle structured error logging. The OTLP logger will
+          // format this correctly.
+          Effect.logError("Failed to delete session on logout", err)
         ),
       );
     }),

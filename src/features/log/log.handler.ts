@@ -1,7 +1,7 @@
 // src/features/log/log.handler.ts
-import { Effect } from "effect";
-import { Logger } from "../../lib/server/logger.server"; // Server-only import
 import { RpcLog } from "../../lib/shared/log-schema"; // Shared schema import
+import { Effect } from "effect";
+
 
 /**
  * A robust stringifier for unknown values to satisfy the linter and prevent '[object Object]'.
@@ -42,15 +42,13 @@ const safeStringify = (value: unknown): string => {
   return "[Unknown Type]";
 };
 
-// The handler implementation for the RpcLog group
 export const RpcLogLayer = RpcLog.toLayer({
   log: (payload) =>
     Effect.gen(function* () {
-      const logger = yield* Logger;
-
-      // ✅ FIX: Use the new safeStringify helper function.
       const message = payload.args.map(safeStringify).join(" ");
 
-      logger[payload.level]({ clientMessage: message }, "[CLIENT LOG]");
+      // Use the global Effect logger. It will automatically be routed
+      // to your OTLP endpoint by the ObservabilityLive layer.
+      return yield* Effect.log(message);
     }),
 });

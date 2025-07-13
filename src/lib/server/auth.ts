@@ -1,6 +1,5 @@
 // src/lib/server/auth.ts
-import {  Effect, Layer, Option, Schema } from "effect";
-import { serverLog, Logger } from "./logger.server";
+import { Effect, Layer, Option, Schema, Metric } from "effect";
 import { Db } from "../../db/DbTag";
 import { Crypto } from "./crypto";
 import { generateId } from "./utils";
@@ -11,6 +10,7 @@ import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { UserId } from "../../types/generated/public/User";
 import { Headers } from "@effect/platform/Headers";
 import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
+import { sessionValidationSuccessCounter } from "./metrics";
 
 // Re-export for convenience in other server files
 export { Auth, AuthError, AuthMiddleware };
@@ -20,31 +20,21 @@ export const AuthMiddlewareLive = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
     const db = yield* Db;
-    const logger = yield* Logger;
 
     return ({ headers, clientId, rpc }) => {
       const logic = Effect.gen(function* () {
-        yield* serverLog(
-          "debug",
-          { clientId, rpc: rpc._tag },
+        const rpcTag = rpc._tag;
+        yield* Effect.logDebug(
+          { clientId, rpc: rpcTag },
           "AuthMiddleware triggered",
         );
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
         if (Option.isNone(sessionIdOption)) {
-          yield* serverLog(
-            "debug",
-            { clientId, rpc: rpc._tag },
+          yield* Effect.logDebug(
+            { clientId, rpc: rpcTag },
             "No session cookie found, failing middleware.",
           );
-
-          // ✅ ADDED THIS LOG FOR EMPHASIS
-          yield* serverLog(
-            "warn",
-            { clientId, rpc: rpc._tag },
-            "AuthMiddleware FINAL DECISION: Failing with Unauthorized (No Session).",
-          );
-
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -54,18 +44,16 @@ export const AuthMiddlewareLive = Layer.effect(
         }
 
         const sessionId = sessionIdOption.value;
-        yield* serverLog(
-          "debug",
-          { clientId, sessionId, rpc: rpc._tag },
+        yield* Effect.logDebug(
+          { clientId, rpc: rpcTag },
           "Session cookie found, validating.",
         );
 
         const { user, session } = yield* validateSessionEffect(sessionId);
 
         if (!user || !session) {
-          yield* serverLog(
-            "warn",
-            { clientId, sessionId, rpc: rpc._tag },
+          yield* Effect.logWarning(
+            { clientId, rpc: rpcTag },
             "Session validation failed (invalid/expired), failing middleware.",
           );
           return yield* Effect.fail(
@@ -76,9 +64,11 @@ export const AuthMiddlewareLive = Layer.effect(
           );
         }
 
-        yield* serverLog(
-          "info",
-          { clientId, userId: user.id, rpc: rpc._tag },
+        // Increment our counter every time a session is successfully validated.
+        yield* Metric.increment(sessionValidationSuccessCounter);
+
+        yield* Effect.logInfo(
+          { clientId, userId: user.id, rpc: rpcTag },
           "Session validated successfully. Providing Auth service.",
         );
         return { user, session };
@@ -87,10 +77,9 @@ export const AuthMiddlewareLive = Layer.effect(
       return logic.pipe(
         Effect.catchAll((err) =>
           err instanceof AuthDatabaseError ?
-            serverLog(
-              "error",
-              { error: err, clientId, rpc: rpc._tag },
+            Effect.logError(
               "Internal database error during session validation.",
+              err,
             ).pipe(
               Effect.andThen(
                 Effect.fail(
@@ -100,11 +89,11 @@ export const AuthMiddlewareLive = Layer.effect(
                   }),
                 ),
               ),
+              Effect.annotateLogs({ clientId, rpc: rpc._tag }),
             ) :
             Effect.fail(err)
         ),
         Effect.provideService(Db, db),
-        Effect.provideService(Logger, logger),
       );
     };
   }),
@@ -129,6 +118,9 @@ export const createSessionEffect = (
     const db = yield* Db;
     const sessionId = yield* generateId(40);
     const expiresAt = createDate(new TimeSpan(30, "d"));
+
+    yield* Effect.logInfo({ userId }, "Creating new session in database");
+
     yield* Effect.tryPromise({
       try: () =>
         db
@@ -140,20 +132,21 @@ export const createSessionEffect = (
           })
           .execute(),
       catch: (cause) => new AuthDatabaseError({ cause }),
-    });
+    }).pipe(
+      Effect.withSpan("db.createSession", {
+        attributes: { "db.system": "postgresql", "db.table": "session" },
+      }),
+    );
+
     return sessionId;
   });
 
 export const deleteSessionEffect = (
   sessionId: string,
-): Effect.Effect<void, AuthDatabaseError, Db | Logger> =>
+): Effect.Effect<void, AuthDatabaseError, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* serverLog(
-      "info",
-      { sessionId },
-      "Attempting to delete session from DB",
-    );
+    yield* Effect.logInfo({ sessionId }, "Attempting to delete session from DB");
     yield* Effect.tryPromise({
       try: () =>
         db
@@ -162,8 +155,7 @@ export const deleteSessionEffect = (
           .execute(),
       catch: (cause) => new AuthDatabaseError({ cause }),
     });
-    yield* serverLog(
-      "info",
+    yield* Effect.logInfo(
       { sessionId },
       "DB operation to delete session completed",
     );
@@ -174,7 +166,7 @@ export const validateSessionEffect = (
 ): Effect.Effect<
   { user: User | null; session: Session | null },
   AuthDatabaseError,
-  Db | Logger
+  Db
 > =>
   Effect.gen(function* () {
     const db = yield* Db;

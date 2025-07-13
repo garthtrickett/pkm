@@ -1,5 +1,4 @@
-// scripts/seed.ts
-import { serverLog, LoggerLive } from "../lib/server/logger.server";
+// src/db/seed.ts
 import { perms } from "../lib/shared/permissions";
 import type { UserId } from "../types/generated/public/User";
 import { Argon2id } from "oslo/password";
@@ -8,16 +7,15 @@ import { DbLayer } from "../db/DbLayer";
 import { Db } from "../db/DbTag";
 import { toError } from "../lib/shared/toError";
 import { ConfigLive } from "../lib/server/Config";
+import { ObservabilityLive } from "../lib/server/observability";
 
 const TEST_USER_PASSWORD = "password123";
 
 const seedProgram = Effect.gen(function* () {
-  yield* Effect.forkDaemon(
-    serverLog(
-      "info",
-      { email: "garthtrickett@gmail.com", password: TEST_USER_PASSWORD },
-      "Seeding database with test user...",
-    ),
+  // We don't need to fork this log. Let it be part of the main flow.
+  yield* Effect.logInfo(
+    { email: "garthtrickett@gmail.com" }, // Redacted password from log
+    "Seeding database with test user...",
   );
 
   const argon2id = new Argon2id();
@@ -55,27 +53,21 @@ const seedProgram = Effect.gen(function* () {
       catch: (e) => toError(e),
     }),
     Effect.tap(() =>
-      Effect.forkDaemon(
-        serverLog(
-          "info",
-          { email: TEST_USER.email },
-          "✅ User seeded/updated successfully.",
-        ),
+      Effect.logInfo(
+        { email: TEST_USER.email },
+        "✅ User seeded/updated successfully.",
       ),
     ),
   );
 });
 
-// Create a combined layer of all services the script needs.
-const programLayer = Layer.mergeAll(DbLayer, LoggerLive, ConfigLive);
+const programLayer = Layer.mergeAll(DbLayer, ObservabilityLive, ConfigLive);
 
 const runnable = pipe(
   seedProgram,
   Effect.catchAll((error) =>
     pipe(
-      Effect.forkDaemon(
-        serverLog("error", { error }, `Seeding failed: ${error.message}`),
-      ),
+      Effect.logError(`Seeding failed`, error),
       Effect.andThen(Effect.fail(error)),
     ),
   ),

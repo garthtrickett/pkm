@@ -2,7 +2,7 @@
 import { Cause, Data, Effect, Exit, Layer } from "effect";
 import type { Kysely } from "kysely";
 import { Migrator } from "kysely";
-import { LoggerLive, serverLog } from "../lib/server/logger.server";
+import { ObservabilityLive } from "../lib/server/observability";
 import type { Database } from "../types";
 import { makeDbLive } from "./kysely";
 import { CentralMigrationProviderLive } from "./migrations/CentralMigrationProvider";
@@ -17,8 +17,7 @@ const runMigrations = (direction: "up" | "down", db: Kysely<Database>) =>
   Effect.gen(function* () {
     const providerService = yield* CentralMigrationProvider;
 
-    yield* serverLog(
-      "info",
+    yield* Effect.logInfo(
       { direction },
       "Running migrations via migrator.ts",
     );
@@ -40,8 +39,9 @@ const runMigrations = (direction: "up" | "down", db: Kysely<Database>) =>
     });
 
     for (const it of results ?? []) {
-      yield* serverLog(
-        it.status === "Success" ? "info" : "error",
+      const logEffect =
+        it.status === "Success" ? Effect.logInfo : Effect.logError;
+      yield* logEffect(
         { migrationName: it.migrationName, status: it.status },
         "Migration status",
       );
@@ -52,9 +52,9 @@ const runMigrations = (direction: "up" | "down", db: Kysely<Database>) =>
         error instanceof Error
           ? error.message
           : typeof error === "string"
-            ? error
-            : JSON.stringify(error, null, 2);
-      yield* serverLog("error", { error: errorMessage }, "Migration failed");
+          ? error
+          : JSON.stringify(error, null, 2);
+      yield* Effect.logError({ error: errorMessage }, "Migration failed");
       return yield* Effect.fail(error);
     }
   });
@@ -80,13 +80,13 @@ const programLogic = Effect.gen(function* () {
   );
 });
 
-// **FIX:** Merge the CentralMigrationProviderLive and LoggerLive layers.
-const programLayer = Layer.merge(CentralMigrationProviderLive, LoggerLive);
+const programLayer = Layer.merge(
+  CentralMigrationProviderLive,
+  ObservabilityLive,
+);
 
-// Create the final runnable effect by providing the combined layer to the logic.
 const runnable = programLogic.pipe(Effect.provide(programLayer));
 
-// Execute the fully-provided effect.
 void Effect.runPromiseExit(runnable).then((exit) => {
   if (Exit.isFailure(exit)) {
     console.error(`❌ Migration via migrator.ts failed ('${direction}'):`);

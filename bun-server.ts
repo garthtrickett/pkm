@@ -3,10 +3,10 @@ import { HttpRouter } from "@effect/platform";
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Layer } from "effect";
+import { ObservabilityLive } from "./src/lib/server/observability"; // 
 
 // Core Services
 import { DbLayer } from "./src/db/DbLayer";
-import { LoggerLive } from "./src/lib/server/logger.server";
 import { AuthMiddlewareLive } from "./src/lib/server/auth";
 import { CryptoLive } from "./src/lib/server/crypto";
 
@@ -43,7 +43,7 @@ const Main = HttpRouter.Default.serve().pipe(
   Layer.provide(BunHttpServer.layer({ port: 42069 })),
   Layer.provide(AuthMiddlewareLive),
   Layer.provide(DbLayer),
-  Layer.provide(LoggerLive),
+  Layer.provide(ObservabilityLive),
   Layer.provide(CryptoLive),
 );
 
