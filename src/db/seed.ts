@@ -41,44 +41,33 @@ const seedProgram = Effect.gen(function* () {
 
   const db = yield* Db;
 
-  // ✅ FIX 1: Changed `.executeTakeFirst()` to `.execute()`.
-  // The `.execute()` method on an insert query is correctly wrapped to return an
-  // Effect, which allows us to pipe it and handle errors within the Effect ecosystem.
-     yield* Effect.tryPromise({
-    try: () =>
-      db
-        .insertInto("user")
-        .values(TEST_USER)
-        .onConflict((oc) =>
-          oc.column("id").doUpdateSet({
-            email: TEST_USER.email,
-            password_hash: hashedPassword,
-            permissions: TEST_USER.permissions,
-            email_verified: TEST_USER.email_verified,
-          }),
-        )
-        .returning("id")
-        .execute(),
-    // The 'catch' block here serves the same purpose as the original 'mapError'.
-    catch: (cause) => new SeedingError({ cause }),
-  }).pipe(
-    Effect.tap(() =>
-      Effect.logInfo(
-        { email: TEST_USER.email },
-        "✅ User seeded/updated successfully.",
+  // ✅ The insert query is now a native Effect. We yield it directly without
+  // .execute() or Effect.tryPromise.
+  yield* db
+    .insertInto("user")
+    .values(TEST_USER)
+    .onConflict((oc) =>
+      oc.column("id").doUpdateSet({
+        email: TEST_USER.email,
+        password_hash: hashedPassword,
+        permissions: TEST_USER.permissions,
+        email_verified: TEST_USER.email_verified,
+      }),
+    )
+    .returning("id")
+    .pipe(
+      Effect.mapError((cause) => new SeedingError({ cause })),
+      Effect.tap(() =>
+        Effect.logInfo(
+          { email: TEST_USER.email },
+          "✅ User seeded/updated successfully.",
+        ),
       ),
-    ),
-  );
-
+    );
 });
 
 const programLayer = Layer.mergeAll(DbLayer, ObservabilityLive);
 
-// ✅ FIX 2: Replaced `Effect.catchAll` with `Effect.tapError`.
-// The original `catchAll` that logged and re-failed the effect was causing
-// a type inference issue. `tapError` is the idiomatic way to perform a
-// side-effect (like logging) on an error without changing the error itself.
-// This resolves the `R = unknown` type error.
 const runnable = pipe(
   seedProgram,
   Effect.tapError((error) => Effect.logError(`Seeding failed`, error)),

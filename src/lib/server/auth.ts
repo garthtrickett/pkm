@@ -28,6 +28,7 @@ export const AuthMiddlewareLive = Layer.effect(
           { clientId, rpc: rpcTag },
           "AuthMiddleware triggered",
         );
+
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
         if (Option.isNone(sessionIdOption)) {
@@ -48,7 +49,6 @@ export const AuthMiddlewareLive = Layer.effect(
           { clientId, rpc: rpcTag },
           "Session cookie found, validating.",
         );
-
         const { user, session } = yield* validateSessionEffect(sessionId);
 
         if (!user || !session) {
@@ -116,27 +116,25 @@ export const createSessionEffect = (
 ): Effect.Effect<string, AuthDatabaseError, Db | Crypto> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const sessionId = yield* generateId(40);
+    const crypto = yield* Crypto;
+    const sessionId = yield* generateId(40).pipe(Effect.provideService(Crypto, crypto));
     const expiresAt = createDate(new TimeSpan(30, "d"));
 
     yield* Effect.logInfo({ userId }, "Creating new session in database");
 
-    yield* Effect.tryPromise({
-      try: () =>
-        db
-          .insertInto("session")
-          .values({
+    yield* db
+        .insertInto("session")
+        .values({
             id: sessionId as SessionId,
             user_id: userId,
             expires_at: expiresAt,
-          })
-          .execute(),
-      catch: (cause) => new AuthDatabaseError({ cause }),
-    }).pipe(
-      Effect.withSpan("db.createSession", {
-        attributes: { "db.system": "postgresql", "db.table": "session" },
-      }),
-    );
+        })
+        .pipe(
+            Effect.withSpan("db.createSession", {
+                attributes: { "db.system": "postgresql", "db.table": "session" },
+            }),
+            Effect.mapError((cause) => new AuthDatabaseError({ cause }))
+        );
 
     return sessionId;
   });
@@ -147,14 +145,14 @@ export const deleteSessionEffect = (
   Effect.gen(function* () {
     const db = yield* Db;
     yield* Effect.logInfo({ sessionId }, "Attempting to delete session from DB");
-    yield* Effect.tryPromise({
-      try: () =>
-        db
-          .deleteFrom("session")
-          .where("id", "=", sessionId as SessionId)
-          .execute(),
-      catch: (cause) => new AuthDatabaseError({ cause }),
-    });
+    
+    yield* db
+        .deleteFrom("session")
+        .where("id", "=", sessionId as SessionId)
+        .pipe(
+            Effect.mapError((cause) => new AuthDatabaseError({ cause }))
+        );
+
     yield* Effect.logInfo(
       { sessionId },
       "DB operation to delete session completed",
@@ -163,22 +161,16 @@ export const deleteSessionEffect = (
 
 export const validateSessionEffect = (
   sessionId: string,
-): Effect.Effect<
-  { user: User | null; session: Session | null },
-  AuthDatabaseError,
-  Db
-> =>
+): Effect.Effect<{ user: User | null; session: Session | null }, AuthDatabaseError, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const sessionOption = yield* Effect.tryPromise({
-      try: () =>
-        db
-          .selectFrom("session")
-          .selectAll()
-          .where("id", "=", sessionId as SessionId)
-          .executeTakeFirst(),
-      catch: (cause) => new AuthDatabaseError({ cause }),
-    }).pipe(Effect.map(Option.fromNullable));
+    
+    const sessionResult = yield* db
+        .selectFrom("session")
+        .selectAll()
+        .where("id", "=", sessionId as SessionId);
+
+    const sessionOption = Option.fromNullable(sessionResult[0]);
 
     if (Option.isNone(sessionOption)) {
       return { user: null, session: null };
@@ -190,18 +182,17 @@ export const validateSessionEffect = (
       return { user: null, session: null };
     }
 
-    const maybeRawUser = yield* Effect.tryPromise({
-      try: () =>
-        db
-          .selectFrom("user")
-          .selectAll()
-          .where("id", "=", session.user_id)
-          .executeTakeFirst(),
-      catch: (cause) => new AuthDatabaseError({ cause }),
-    });
+    const userResult = yield* db
+        .selectFrom("user")
+        .selectAll()
+        .where("id", "=", session.user_id);
+
+    const maybeRawUser = userResult[0];
 
     const user = Option.getOrNull(
       Schema.decodeUnknownOption(UserSchema)(maybeRawUser),
     );
     return { user, session };
-  });
+  }).pipe(
+      Effect.mapError((cause) => new AuthDatabaseError({ cause }))
+  );
