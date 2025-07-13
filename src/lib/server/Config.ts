@@ -1,29 +1,36 @@
-import { Config as EffectConfig, Context, Layer, Option, pipe } from "effect";
+import { Config as EffectConfig, Context, Layer, Option, pipe, Redacted } from "effect";
 
 // --- Sub-configs for modularity ---
 
 const NeonConfig = pipe(
   EffectConfig.all({
-    url: EffectConfig.string("DATABASE_URL"),
-    // Make localUrl optional
-    localUrl: EffectConfig.option(EffectConfig.string("DATABASE_URL_LOCAL")),
+    // Treat the source URLs as secrets from the start
+    url: EffectConfig.redacted(EffectConfig.string("DATABASE_URL")),
+    localUrl: EffectConfig.option(
+      EffectConfig.redacted(EffectConfig.string("DATABASE_URL_LOCAL")),
+    ),
     useLocalProxy: pipe(
       EffectConfig.boolean("USE_LOCAL_NEON_PROXY"),
       EffectConfig.withDefault(false),
     ),
   }),
-  EffectConfig.map(({ url, localUrl, useLocalProxy }) => ({
-    // Derive the final connection string based on the proxy setting and
-    // whether localUrl is present.
-    connectionString: pipe(
-      localUrl,
-      Option.filter(() => useLocalProxy), // Use localUrl only if useLocalProxy is true
-      Option.getOrElse(() => url), // Fallback to the primary URL
-    ),
-    useLocalProxy,
-  })),
-);
+  // Map over the config to derive the final connection string
+  EffectConfig.map(({ url, localUrl, useLocalProxy }) => {
+    // Derive the final string, unwrapping the Redacted values for the logic
+    const finalUrlString = pipe(
+      localUrl, // Option<Redacted<string>>
+      Option.filter(() => useLocalProxy),
+      Option.map(Redacted.value), // Get string from Option<Redacted<string>>
+      Option.getOrElse(() => Redacted.value(url)), // Get string from Redacted<string>
+    );
 
+    return {
+      // ✅ Re-wrap the derived plain string into a Redacted value
+      connectionString: Redacted.make(finalUrlString),
+      useLocalProxy,
+    };
+  }),
+);
 const S3Config = EffectConfig.all({
   bucketName: EffectConfig.string("BUCKET_NAME"),
   publicAvatarUrl: EffectConfig.string("PUBLIC_AVATAR_URL"),
@@ -50,8 +57,6 @@ const AppInfoConfig = EffectConfig.all({
   ),
 });
 
-// --- Unified Config Service ---
-
 const AppConfigObject = EffectConfig.all({
   neon: NeonConfig,
   s3: S3Config,
@@ -59,17 +64,9 @@ const AppConfigObject = EffectConfig.all({
   app: AppInfoConfig,
 });
 
-/**
- * The main Config service for the application.
- * Other services will depend on this to get their configuration.
- */
 export class Config extends Context.Tag("app/Config")<
   Config,
   EffectConfig.Config.Success<typeof AppConfigObject>
 >() {}
 
-/**
- * The live implementation of the Config service, which loads
- * configuration from the environment.
- */
 export const ConfigLive = Layer.effect(Config, AppConfigObject);
