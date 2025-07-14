@@ -11,6 +11,7 @@ import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import type { User } from "../../lib/shared/schemas";
+import styles from "./LoginPage.module.css";
 
 // --- Model ---
 interface Model {
@@ -21,8 +22,12 @@ interface Model {
 }
 
 // --- Custom Error Types ---
-class LoginInvalidCredentialsError extends Data.TaggedError("LoginInvalidCredentialsError") {}
-class LoginEmailNotVerifiedError extends Data.TaggedError("LoginEmailNotVerifiedError") {}
+class LoginInvalidCredentialsError extends Data.TaggedError(
+  "LoginInvalidCredentialsError",
+) {}
+class LoginEmailNotVerifiedError extends Data.TaggedError(
+  "LoginEmailNotVerifiedError",
+) {}
 class UnknownLoginError extends Data.TaggedError("UnknownLoginError")<{
   readonly cause: unknown;
 }> {}
@@ -68,7 +73,9 @@ export class LoginPage extends LitElement {
   private _propose = (action: Action) =>
     runClientUnscoped(Queue.offer(this._actionQueue, action));
 
-  private _handleAction = (action: Action): Effect.Effect<void, never, RpcAuthClient> => {
+  private _handleAction = (
+    action: Action,
+  ): Effect.Effect<void, never, RpcAuthClient> => {
     this.model = update(this.model, action);
 
     if (action.type === "LOGIN_START") {
@@ -80,37 +87,46 @@ export class LoginPage extends LitElement {
           Effect.mapError((error) => {
             if (error instanceof AuthError) {
               switch (error._tag) {
-                case "Unauthorized": return new LoginInvalidCredentialsError();
-                case "Forbidden": return new LoginEmailNotVerifiedError();
+                case "Unauthorized":
+                  return new LoginInvalidCredentialsError();
+                case "Forbidden":
+                  return new LoginEmailNotVerifiedError();
               }
             }
             return new UnknownLoginError({ cause: error });
-          })
+          }),
         );
       });
 
       // ✅ FIX 2: Use `Effect.matchEffect` for handlers that return Effects
       return loginEffect.pipe(
         Effect.matchEffect({
-          onSuccess: (result) => this._propose({ type: "LOGIN_SUCCESS", payload: result }),
+          onSuccess: (result) =>
+            this._propose({ type: "LOGIN_SUCCESS", payload: result }),
           onFailure: (error) => {
             let message: string;
             switch (error._tag) {
-              case "LoginInvalidCredentialsError": message = "Incorrect email or password."; break;
-              case "LoginEmailNotVerifiedError": message = "Please verify your email address before logging in."; break;
-              default: message = "An unknown error occurred. Please try again."; break;
+              case "LoginInvalidCredentialsError":
+                message = "Incorrect email or password.";
+                break;
+              case "LoginEmailNotVerifiedError":
+                message = "Please verify your email address before logging in.";
+                break;
+              default:
+                message = "An unknown error occurred. Please try again.";
+                break;
             }
             // Return the Effect from _propose directly
             return this._propose({ type: "LOGIN_ERROR", payload: message });
           },
-        })
+        }),
       );
     } else if (action.type === "LOGIN_SUCCESS") {
-        const { user, sessionId } = action.payload;
-        const expires = new Date();
-        expires.setDate(expires.getDate() + 30);
-        document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
-        proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
+      const { user, sessionId } = action.payload;
+      const expires = new Date();
+      expires.setDate(expires.getDate() + 30);
+      document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+      proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
     }
 
     return Effect.void;
@@ -118,9 +134,9 @@ export class LoginPage extends LitElement {
 
   private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
     Stream.runForEach(this._handleAction),
-    Effect.provide(RpcAuthClientLive)
+    Effect.provide(RpcAuthClientLive),
   );
-  
+
   // ... rest of the file is unchanged
   override connectedCallback() {
     super.connectedCallback();
@@ -136,17 +152,26 @@ export class LoginPage extends LitElement {
 
   override render(): TemplateResult {
     return html`
-      <div class="flex min-h-screen items-center justify-center bg-gray-100">
-        <div class="w-full max-w-md rounded-lg bg-white p-8 shadow-md">
-          <h2 class="mb-6 text-center text-2xl font-bold">Login</h2>
-          <form @submit=${(e: Event) => {e.preventDefault(); this._propose({ type: "LOGIN_START" });}}>
+      <div class=${styles.container}>
+        <div class=${styles.formWrapper}>
+          <h2 class=${styles.title}>Login</h2>
+          <form
+            @submit=${(e: Event) => {
+              e.preventDefault();
+              this._propose({ type: "LOGIN_START" });
+            }}
+          >
             <div class="space-y-4">
               ${NotionInput({
                 id: "email",
                 label: "Email",
                 type: "email",
                 value: this.model.email,
-                onInput: (e) => this._propose({ type: "UPDATE_EMAIL", payload: (e.target as HTMLInputElement).value }),
+                onInput: (e) =>
+                  this._propose({
+                    type: "UPDATE_EMAIL",
+                    payload: (e.target as HTMLInputElement).value,
+                  }),
                 required: true,
               })}
               ${NotionInput({
@@ -154,12 +179,18 @@ export class LoginPage extends LitElement {
                 label: "Password",
                 type: "password",
                 value: this.model.password,
-                onInput: (e) => this._propose({ type: "UPDATE_PASSWORD", payload: (e.target as HTMLInputElement).value }),
+                onInput: (e) =>
+                  this._propose({
+                    type: "UPDATE_PASSWORD",
+                    payload: (e.target as HTMLInputElement).value,
+                  }),
                 required: true,
               })}
             </div>
 
-            ${this.model.error ? html`<div class="mt-4 text-sm text-red-500">${this.model.error}</div>` : nothing}
+            ${this.model.error
+              ? html`<div class=${styles.errorText}>${this.model.error}</div>`
+              : nothing}
 
             <div class="mt-6">
               ${NotionButton({
@@ -171,12 +202,26 @@ export class LoginPage extends LitElement {
           </form>
 
           <div class="mt-4 text-center text-sm">
-            <a href="/forgot-password" @click=${(e: Event) => { e.preventDefault(); runClientUnscoped(navigate("/forgot-password"));}} class="font-medium text-zinc-500 hover:text-zinc-700">
+            <a
+              href="/forgot-password"
+              @click=${(e: Event) => {
+                e.preventDefault();
+                runClientUnscoped(navigate("/forgot-password"));
+              }}
+              class=${styles.link}
+            >
               Forgot your password?
             </a>
           </div>
           <div class="mt-2 text-center text-sm">
-            <a href="/signup" class="font-medium text-zinc-600 hover:text-zinc-500" @click=${(e: Event) => { e.preventDefault(); runClientUnscoped(navigate("/signup"));}}>
+            <a
+              href="/signup"
+              class=${styles.link}
+              @click=${(e: Event) => {
+                e.preventDefault();
+                runClientUnscoped(navigate("/signup"));
+              }}
+            >
               Don't have an account? Sign up.
             </a>
           </div>
@@ -184,7 +229,6 @@ export class LoginPage extends LitElement {
       </div>
     `;
   }
-  
   protected override createRenderRoot() {
     return this;
   }

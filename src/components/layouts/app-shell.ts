@@ -71,6 +71,10 @@ const processStateChange = (
 export class AppShell extends HTMLElement {
   private mainFiber?: Fiber.RuntimeFiber<void, unknown>;
 
+  protected createRenderRoot() {
+    return this;
+  }
+
   connectedCallback() {
     const mainAppStream = appStateStream.pipe(
       Stream.flatMap(

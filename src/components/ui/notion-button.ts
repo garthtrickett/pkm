@@ -88,4 +88,3 @@ export const NotionButton = (props: NotionButtonProps): TemplateResult => {
     </button>
   `;
 };
-

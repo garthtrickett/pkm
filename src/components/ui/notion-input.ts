@@ -1,4 +1,4 @@
-// File: ./components/ui/notion-input.ts
+// src/components/ui/notion-input.ts
 import { html, type TemplateResult } from "lit-html";
 import { classMap } from "lit-html/directives/class-map.js";
 
@@ -39,7 +39,7 @@ export const NotionInput = (props: NotionInputProps): TemplateResult => {
     block: true,
     "text-sm": true,
     "font-medium": true,
-    "text-gray-700": true,
+    "text-zinc-700": true,
   };
 
   // Base classes for the input element, matching login/signup pages
@@ -49,7 +49,7 @@ export const NotionInput = (props: NotionInputProps): TemplateResult => {
     "w-full": true,
     "rounded-md": true,
     border: true,
-    "border-gray-300": true,
+    "border-zinc-300": true,
     "px-3": true,
     "py-2": true,
     "shadow-sm": true,
@@ -58,7 +58,7 @@ export const NotionInput = (props: NotionInputProps): TemplateResult => {
     "focus:ring-zinc-500": true,
     "sm:text-sm": true,
     "disabled:pointer-events-none": true,
-    "disabled:bg-gray-100": true,
+    "disabled:bg-zinc-100": true,
   };
 
   return html`
@@ -78,4 +78,3 @@ export const NotionInput = (props: NotionInputProps): TemplateResult => {
     </div>
   `;
 };
-
