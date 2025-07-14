@@ -43,11 +43,10 @@ type AuthAction =
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
 
 export const proposeAuthAction = (action: AuthAction): void => {
+  // ✅ MODIFIED: Add synchronous console log for immediate feedback
+  console.log(`[authStore] Proposing action: ${action.type}`, action);
   runClientUnscoped(
-    clientLog(
-      "info",
-      `[authStore] Proposing action: ${action.type}`,
-    ),
+    clientLog("info", `[authStore] Proposing action: ${action.type}`),
   );
   runClientUnscoped(Queue.offer(_actionQueue, action));
 };
@@ -77,10 +76,12 @@ const handleAuthAction = (
   action: AuthAction,
 ): Effect.Effect<void, Error, RpcAuthClient | RpcLogClient> =>
   Effect.gen(function* () {
+    const oldStatus = authState.value.status;
     authState.value = update(authState.value, action);
     yield* clientLog(
       "info",
-      `[authStore] State updated to: ${authState.value.status}`,
+      `[authStore] State updated: ${oldStatus} -> ${authState.value.status}`,
+      { actionType: action.type },
     );
 
     const authClient = yield* RpcAuthClient;
@@ -118,8 +119,21 @@ const handleAuthAction = (
       }
 
       case "LOGOUT_START": {
+        yield* clientLog(
+          "info",
+          "[authStore] Awaiting RPC call: authClient.logout()",
+        );
         yield* Effect.either(authClient.logout());
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
+        break;
+      }
+      // ✅ ADDED: Log when SET_AUTHENTICATED is handled
+      case "SET_AUTHENTICATED": {
+        yield* clientLog(
+          "info",
+          "[authStore] Successfully set user as authenticated.",
+          { userId: action.payload.id },
+        );
         break;
       }
     }

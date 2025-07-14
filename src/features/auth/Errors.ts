@@ -68,3 +68,6 @@ export class AuthValidationError extends Data.TaggedError(
   readonly cause: ParseError;
 }> {}
 
+export class EmailAlreadyExistsError extends Data.TaggedError(
+  "EmailAlreadyExistsError",
+) {}

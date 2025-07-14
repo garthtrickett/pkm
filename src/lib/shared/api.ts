@@ -14,20 +14,22 @@ export class RequestError extends Schema.Class<RequestError>("RequestError")({
 
 // Group for routes that are explicitly unprotected.
 const UnprotectedAuthRpc = RpcGroup.make(
-  Rpc.make("SignUpRequest", {
-    error: RequestError,
-    success: Schema.Boolean,
-    payload: {
-      email: Schema.String,
-      password: Schema.String,
-    },
-  }),
-  // Add the login definition here
+  // The existing login definition
   Rpc.make("login", {
     success: Schema.Struct({
       user: UserSchema,
       sessionId: Schema.String,
     }),
+    error: AuthError,
+    payload: {
+      email: Schema.String,
+      password: Schema.String,
+    },
+  }),
+
+  // ✅ Add the new signup definition here
+  Rpc.make("signup", {
+    success: UserSchema, // On success, it returns the created user
     error: AuthError,
     payload: {
       email: Schema.String,

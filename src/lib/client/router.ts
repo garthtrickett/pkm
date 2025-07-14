@@ -3,11 +3,11 @@ import { html, type TemplateResult } from "lit-html";
 import { LocationService } from "./LocationService";
 import { clientLog, RpcLogClient } from "./clientLog";
 
-// ✅ 1. Import your new component
+// --- Import your page components ---
 import "../../components/pages/login-page";
+import "../../components/pages/signup-page";
 
 // --- Placeholder Page Components ---
-// We no longer need the LoginPage placeholder function.
 const NotesView = (): ViewResult => ({ template: html`<div>Notes Page</div>` });
 const UnauthorizedView = (): ViewResult => ({
   template: html`<div>403 Unauthorized</div>`,
@@ -34,16 +34,20 @@ type MatchedRoute = Route & { params: string[] };
 // --- Route Definitions ---
 const routes: Route[] = [
   { pattern: /^\/$/, view: NotesView, meta: { requiresAuth: true } },
-  // ✅ 2. Replace the placeholder with a function that creates your new element
   {
     pattern: /^\/login$/,
     view: () => document.createElement("login-page"),
     meta: { isPublicOnly: true },
   },
+  {
+    pattern: /^\/signup$/,
+    view: () => document.createElement("signup-page"),
+    meta: { isPublicOnly: true },
+  },
   { pattern: /^\/unauthorized$/, view: UnauthorizedView, meta: {} },
 ];
 
-// --- Router Logic (No changes needed below) ---
+// --- Router Logic ---
 export const matchRoute = (path: string): Effect.Effect<MatchedRoute> =>
   Effect.gen(function* () {
     for (const route of routes) {
