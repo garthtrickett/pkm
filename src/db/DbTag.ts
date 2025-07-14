@@ -1,8 +1,10 @@
 // src/db/DbTag.ts
 import { Context } from "effect";
-// Import EffectKysely from the PostgreSQL adapter
-import type { EffectKysely } from "@effect/sql-kysely/Pg"; 
+// --- FIX: Import the standard Kysely type ---
+import type { Kysely } from "kysely";
 import type { Database } from "../types";
 
-// Service Tag for the Kysely instance, now using the Effect-compatible type
-export class Db extends Context.Tag("Db")<Db, EffectKysely<Database>>() {}
+// --- FIX: Change the service type from EffectKysely to Kysely ---
+// This tells the rest of the application to expect a standard,
+// promise-based Kysely instance.
+export class Db extends Context.Tag("Db")<Db, Kysely<Database>>() {}

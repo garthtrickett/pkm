@@ -39,8 +39,6 @@
     "@effect/platform-browser": "^0.67.12",
     "@effect/platform-bun": "^0.72.17",
     "@effect/rpc": "^0.64.13",
-    "@effect/sql-kysely": "^0.36.13",
-    "@effect/sql-pg": "^0.41.13",
     "@opentelemetry/sdk-logs": "^0.203.0",
     "@opentelemetry/sdk-metrics": "^2.0.1",
     "@opentelemetry/sdk-trace-node": "^2.0.1",

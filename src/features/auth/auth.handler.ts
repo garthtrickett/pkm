@@ -1,11 +1,15 @@
 // src/features/auth/auth.handler.ts
-import { Effect, Data } from "effect";
+import { Effect } from "effect";
 import { AuthRpc } from "../../lib/shared/api";
-import { Auth, deleteSessionEffect } from "../../lib/server/auth";
-// Correctly import the User *type* and other necessary types
-import type { User, UserId } from "../../lib/shared/schemas";
+import { Auth } from "../../lib/shared/auth";
+import { createSessionEffect, deleteSessionEffect } from "../../lib/server/auth";
+import { Db } from "../../db/DbTag";
+import { Argon2id } from "oslo/password";
+import {
+  EmailNotVerifiedError,
+  InvalidCredentialsError,
+} from "./Errors";
 import { AuthError } from "../../lib/shared/auth";
-class NotImplementedError extends Data.TaggedError("NotImplementedError") {}
 
 export const AuthRpcLayer = AuthRpc.toLayer({
   // Unprotected handler for signing up
@@ -18,7 +22,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
           module: "RpcAuth",
         }),
       );
-      // In a real app, you would add user creation logic here.
       return true;
     }),
 
@@ -26,38 +29,81 @@ export const AuthRpcLayer = AuthRpc.toLayer({
   login: (credentials) =>
     Effect.gen(function* () {
       yield* Effect.logInfo({ email: credentials.email }, "Login attempt");
+      const db = yield* Db;
 
-      // Placeholder: Create a mock user that matches the *full* User schema
-      const placeholderUser: User = {
-        id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11" as UserId,
-        email: credentials.email,
-        password_hash: "mock_hash",
-        created_at: new Date(),
-        permissions: [],
-        avatar_url: null,
-        email_verified: true,
-      };
-      const placeholderSessionId = "mock-session-id";
+      const userResult = yield* Effect.promise(() =>
+        db
+          .selectFrom("user")
+          .selectAll()
+          .where("email", "=", credentials.email)
+          .execute(),
+      );
 
-      return { user: placeholderUser, sessionId: placeholderSessionId };
-    }),
+      const user = userResult[0];
+      if (!user) {
+        return yield* Effect.fail(new InvalidCredentialsError());
+      }
 
-  // Protected handler to get the current user
+      const argon2id = new Argon2id();
+      const validPassword = yield* Effect.tryPromise({
+        try: () => argon2id.verify(user.password_hash, credentials.password),
+        catch: () => new InvalidCredentialsError(),
+      });
+
+      if (!validPassword) {
+        return yield* Effect.fail(new InvalidCredentialsError());
+      }
+
+      if (!user.email_verified) {
+        return yield* Effect.fail(new EmailNotVerifiedError());
+      }
+
+      const sessionId = yield* createSessionEffect(user.id);
+
+      yield* Effect.logInfo(
+        { userId: user.id, email: user.email },
+        "Login successful, session created",
+      );
+
+      return { user, sessionId };
+    }).pipe(
+      Effect.catchTags({
+        InvalidCredentialsError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "Unauthorized",
+              message: "Invalid credentials",
+            }),
+          ),
+        EmailNotVerifiedError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "Forbidden",
+              message: "Email not verified",
+            }),
+          ),
+      }),
+      Effect.catchAll((error) =>
+        Effect.logError("Unhandled error during login", error).pipe(
+          Effect.andThen(Effect.fail(new AuthError({
+            _tag: "InternalServerError",
+            message: "An internal server error occurred."
+          })))
+        )
+      )
+    ),
+
   me: () =>
     Effect.gen(function* () {
       const { user } = yield* Auth;
       const safeUserLog = {
         userId: user!.id,
-        userEmail: user!.email
+        userEmail: user!.email,
       };
       yield* Effect.logDebug(safeUserLog, `'me' request successful`);
-
-      // The 'user' object from the Auth context already matches the full User schema.
-      // Simply return it directly.
       return user!;
     }),
 
-  // Protected handler for logging out
   logout: () =>
     Effect.gen(function* () {
       const { session } = yield* Auth;
@@ -65,7 +111,7 @@ export const AuthRpcLayer = AuthRpc.toLayer({
 
       yield* deleteSessionEffect(session!.id).pipe(
         Effect.catchAll((err) =>
-          Effect.logError("Failed to delete session on logout", err)
+          Effect.logError("Failed to delete session on logout", err),
         ),
       );
     }),

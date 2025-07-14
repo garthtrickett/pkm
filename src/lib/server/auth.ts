@@ -20,6 +20,8 @@ export const AuthMiddlewareLive = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
     const db = yield* Db;
+    const validate = (sessionId: string) =>
+      validateSessionEffect(sessionId).pipe(Effect.provideService(Db, db));
 
     return ({ headers, clientId, rpc }) => {
       const logic = Effect.gen(function* () {
@@ -32,10 +34,6 @@ export const AuthMiddlewareLive = Layer.effect(
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
         if (Option.isNone(sessionIdOption)) {
-          yield* Effect.logDebug(
-            { clientId, rpc: rpcTag },
-            "No session cookie found, failing middleware.",
-          );
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -44,18 +42,9 @@ export const AuthMiddlewareLive = Layer.effect(
           );
         }
 
-        const sessionId = sessionIdOption.value;
-        yield* Effect.logDebug(
-          { clientId, rpc: rpcTag },
-          "Session cookie found, validating.",
-        );
-        const { user, session } = yield* validateSessionEffect(sessionId);
+        const { user, session } = yield* validate(sessionIdOption.value);
 
         if (!user || !session) {
-          yield* Effect.logWarning(
-            { clientId, rpc: rpcTag },
-            "Session validation failed (invalid/expired), failing middleware.",
-          );
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -64,7 +53,6 @@ export const AuthMiddlewareLive = Layer.effect(
           );
         }
 
-        // Increment our counter every time a session is successfully validated.
         yield* Metric.increment(sessionValidationSuccessCounter);
 
         yield* Effect.logInfo(
@@ -74,27 +62,7 @@ export const AuthMiddlewareLive = Layer.effect(
         return { user, session };
       });
 
-      return logic.pipe(
-        Effect.catchAll((err) =>
-          err instanceof AuthDatabaseError ?
-            Effect.logError(
-              "Internal database error during session validation.",
-              err,
-            ).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new AuthError({
-                    _tag: "InternalServerError",
-                    message: "An internal error occurred during authentication.",
-                  }),
-                ),
-              ),
-              Effect.annotateLogs({ clientId, rpc: rpc._tag }),
-            ) :
-            Effect.fail(err)
-        ),
-        Effect.provideService(Db, db),
-      );
+      return logic;
     };
   }),
 );
@@ -116,25 +84,19 @@ export const createSessionEffect = (
 ): Effect.Effect<string, AuthDatabaseError, Db | Crypto> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const crypto = yield* Crypto;
-    const sessionId = yield* generateId(40).pipe(Effect.provideService(Crypto, crypto));
+    const sessionId = yield* generateId(40);
     const expiresAt = createDate(new TimeSpan(30, "d"));
 
-    yield* Effect.logInfo({ userId }, "Creating new session in database");
-
-    yield* db
+    yield* Effect.promise(() =>
+      db
         .insertInto("session")
         .values({
-            id: sessionId as SessionId,
-            user_id: userId,
-            expires_at: expiresAt,
+          id: sessionId as SessionId,
+          user_id: userId,
+          expires_at: expiresAt,
         })
-        .pipe(
-            Effect.withSpan("db.createSession", {
-                attributes: { "db.system": "postgresql", "db.table": "session" },
-            }),
-            Effect.mapError((cause) => new AuthDatabaseError({ cause }))
-        );
+        .execute(),
+    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
 
     return sessionId;
   });
@@ -144,55 +106,53 @@ export const deleteSessionEffect = (
 ): Effect.Effect<void, AuthDatabaseError, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* Effect.logInfo({ sessionId }, "Attempting to delete session from DB");
-    
-    yield* db
+    yield* Effect.promise(() =>
+      db
         .deleteFrom("session")
         .where("id", "=", sessionId as SessionId)
-        .pipe(
-            Effect.mapError((cause) => new AuthDatabaseError({ cause }))
-        );
-
-    yield* Effect.logInfo(
-      { sessionId },
-      "DB operation to delete session completed",
+        .execute(),
+    ).pipe(
+      Effect.mapError((cause) => new AuthDatabaseError({ cause })),
+      Effect.asVoid,
     );
   });
 
 export const validateSessionEffect = (
   sessionId: string,
-): Effect.Effect<{ user: User | null; session: Session | null }, AuthDatabaseError, Db> =>
+): Effect.Effect<
+  { user: User | null; session: Session | null },
+  AuthDatabaseError,
+  Db
+> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    
-    const sessionResult = yield* db
+    const session = yield* Effect.promise(() =>
+      db
         .selectFrom("session")
         .selectAll()
-        .where("id", "=", sessionId as SessionId);
+        .where("id", "=", sessionId as SessionId)
+        .executeTakeFirst(),
+    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
 
-    const sessionOption = Option.fromNullable(sessionResult[0]);
-
-    if (Option.isNone(sessionOption)) {
+    if (!session) {
       return { user: null, session: null };
     }
 
-    const session = sessionOption.value;
     if (session.expires_at < new Date()) {
-      yield* deleteSessionEffect(sessionId);
+      yield* Effect.fork(deleteSessionEffect(sessionId));
       return { user: null, session: null };
     }
 
-    const userResult = yield* db
+    const maybeRawUser = yield* Effect.promise(() =>
+      db
         .selectFrom("user")
         .selectAll()
-        .where("id", "=", session.user_id);
-
-    const maybeRawUser = userResult[0];
+        .where("id", "=", session.user_id)
+        .executeTakeFirst(),
+    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
 
     const user = Option.getOrNull(
       Schema.decodeUnknownOption(UserSchema)(maybeRawUser),
     );
     return { user, session };
-  }).pipe(
-      Effect.mapError((cause) => new AuthDatabaseError({ cause }))
-  );
+  });
