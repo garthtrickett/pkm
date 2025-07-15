@@ -265,9 +265,6 @@ export class ProfilePage extends LitElement {
     }
   }
 
-  // ✅ THE FIX: Remove `.provide(RpcAuthClientLive)`
-  // This stream will now inherit its context (including the correct HttpClient
-  // needed by RpcAuthClient) from the `runClientUnscoped` function that calls it.
   private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
     Stream.runForEach(this._handleAction),
   );

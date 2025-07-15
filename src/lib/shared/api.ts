@@ -2,7 +2,7 @@
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
-import { AuthMiddleware, AuthError } from "./auth";
+import { AuthError } from "./auth";
 
 export { AuthError };
 
@@ -12,8 +12,8 @@ export class RequestError extends Schema.Class<RequestError>("RequestError")({
 
 // --- RPC Definitions ---
 
-// Group for routes that are explicitly unprotected.
-const UnprotectedAuthRpc = RpcGroup.make(
+// ✅ FIX: Export this group directly.
+export const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("login", {
     success: Schema.Struct({
       user: PublicUserSchema,
@@ -27,7 +27,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
   }),
 
   Rpc.make("signup", {
-    success: PublicUserSchema, // On success, it returns the created user
+    success: PublicUserSchema,
     error: AuthError,
     payload: {
       email: Schema.String,
@@ -47,8 +47,8 @@ const UnprotectedAuthRpc = RpcGroup.make(
   }),
 );
 
-// Group for routes that ARE protected by authentication.
-const ProtectedAuthRpc = RpcGroup.make(
+// ✅ FIX: Export this group directly.
+export const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("me", {
     success: PublicUserSchema,
     error: AuthError,
@@ -65,7 +65,6 @@ const ProtectedAuthRpc = RpcGroup.make(
       newPassword: Schema.String.pipe(Schema.minLength(8)),
     },
   }),
-).middleware(AuthMiddleware);
+);
 
-// The final exported group merges them.
 export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);

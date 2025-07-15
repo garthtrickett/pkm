@@ -1,6 +1,7 @@
 // src/features/auth/auth.handler.ts
 import { Effect } from "effect";
-import { AuthRpc } from "../../lib/shared/api";
+// ✅ FIX: Import the separated RPC definitions
+import { UnprotectedAuthRpc, ProtectedAuthRpc } from "../../lib/shared/api";
 import { Auth } from "../../lib/shared/auth";
 import {
   createSessionEffect,
@@ -23,7 +24,6 @@ import { Crypto } from "../../lib/server/crypto";
 import { createDate, TimeSpan, isWithinExpirationDate } from "oslo";
 import type { EmailVerificationTokenId } from "../../types/generated/public/EmailVerificationToken";
 
-// A placeholder for a future email service.
 const sendVerificationEmail = (email: string, token: string) =>
   Effect.logInfo(
     { email, verificationLink: `http://localhost:5173/verify-email/${token}` },
@@ -53,9 +53,11 @@ const createVerificationToken = (
     return verificationToken;
   });
 
-export const AuthRpcHandlers = AuthRpc.of({
+// This group requires Db and Crypto, but NOT Auth.
+export const UnprotectedAuthRpcHandlers = UnprotectedAuthRpc.of({
   signup: (credentials) =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       yield* Effect.logInfo({ email: credentials.email }, "Signup attempt");
       const db = yield* Db;
       const crypto = yield* Crypto;
@@ -137,9 +139,9 @@ export const AuthRpcHandlers = AuthRpc.of({
         ),
       ),
     ),
-
   verifyEmail: ({ token }) =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       yield* Effect.logInfo(
         { tokenPrefix: token.substring(0, 8) },
         "Email verification attempt",
@@ -206,6 +208,7 @@ export const AuthRpcHandlers = AuthRpc.of({
     ),
   login: (credentials) =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       yield* Effect.logInfo(
         { email: credentials.email },
         "Login handler started",
@@ -306,17 +309,21 @@ export const AuthRpcHandlers = AuthRpc.of({
         ),
       ),
     ),
+});
 
+// This group requires Db, Crypto, AND Auth.
+export const ProtectedAuthRpcHandlers = ProtectedAuthRpc.of({
   me: () =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       const { user } = yield* Auth;
       yield* Effect.logDebug({ userId: user!.id }, `'me' request successful`);
       const { password_hash, ...publicUser } = user!;
       return publicUser;
     }),
-
   logout: () =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       const { session } = yield* Auth;
       yield* Effect.logInfo(
         { userId: session!.user_id },
@@ -329,9 +336,9 @@ export const AuthRpcHandlers = AuthRpc.of({
         ),
       );
     }),
-
   changePassword: ({ oldPassword, newPassword }) =>
     Effect.gen(function* () {
+      // ... (implementation is unchanged)
       const { user: contextUser } = yield* Auth;
 
       // --- 🪵 EXHAUSTIVE LOG: Confirm handler entry with context ---

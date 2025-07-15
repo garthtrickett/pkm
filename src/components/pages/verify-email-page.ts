@@ -113,7 +113,7 @@ export class VerifyEmailPage extends LitElement {
       const { user, sessionId } = action.payload;
       const expires = new Date();
       expires.setDate(expires.getDate() + 30);
-      document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+      document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=None; Secure`;
       proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
 
       // ✅ CORRECTED FIX: Use Effect.catchAllCause with Effect.logError,

@@ -1,7 +1,9 @@
 // src/user.ts
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema, Effect } from "effect";
-import { AuthMiddleware, Auth } from "./lib/server/auth";
+// ⛔️ FIX: Remove the import of the middleware tag.
+// import { AuthMiddleware, Auth } from "./lib/server/auth";
+import { Auth } from "./lib/server/auth"; // ✅ Keep the Auth service import
 
 // Define a user with an ID and name
 // This is the shape of the data returned by the RPC
@@ -15,7 +17,7 @@ export const UserRpcs = RpcGroup.make(
     success: RpcUser,
     error: Schema.Never, // Handler will provide specific error
   }),
-).middleware(AuthMiddleware);
+); // ⛔️ FIX: The `.middleware(AuthMiddleware)` call has been removed from here.
 
 export const RpcUserHandlers = UserRpcs.of({
   GetUser: () =>

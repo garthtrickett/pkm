@@ -1,151 +1,49 @@
 // src/lib/server/auth.ts
-import { Effect, Layer, Option, Schema, Metric } from "effect";
-import { Db } from "../../db/DbTag";
-import { Crypto } from "./crypto";
-import { generateId } from "./utils";
-import { createDate, TimeSpan } from "oslo";
-import { AuthDatabaseError } from "../../features/auth/Errors";
-import { UserSchema, type User } from "../shared/schemas";
-import type { Session, SessionId } from "../../types/generated/public/Session";
-import type { UserId } from "../../types/generated/public/User";
+import { Effect, Metric, Option, Schema } from "effect";
 import {
   HttpMiddleware,
   HttpServerRequest,
   HttpServerResponse,
 } from "@effect/platform";
 import type { Headers } from "@effect/platform/Headers";
-import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
+import { createDate, TimeSpan } from "oslo";
+
+import { AuthDatabaseError } from "../../features/auth/Errors";
+import type { Session, SessionId } from "../../types/generated/public/Session";
+import type { User, UserId } from "../../types/generated/public/User";
+import { UserSchema } from "../shared/schemas";
+import { Auth, AuthError } from "../shared/auth"; // Shared context
+import { Db } from "../../db/DbTag";
+import { Crypto } from "./crypto";
 import { sessionValidationSuccessCounter } from "./metrics";
+import { generateId } from "./utils";
 
 // Re-export for convenience in other server files
-export { Auth, AuthError, AuthMiddleware };
+export { Auth, AuthError };
 
-// --- LIVE IMPLEMENTATION ---
-export const AuthMiddlewareLive = Layer.effect(
-  AuthMiddleware,
-  Effect.gen(function* () {
-    const db = yield* Db;
-    const validate = (sessionId: string) =>
-      validateSessionEffect(sessionId).pipe(Effect.provideService(Db, db));
-
-    return ({ headers, clientId, rpc }) => {
-      const logic = Effect.gen(function* () {
-        const rpcTag = rpc._tag;
-        yield* Effect.logDebug(
-          { clientId, rpc: rpcTag },
-          "AuthMiddleware triggered",
-        );
-
-        // --- 🪵 EXHAUSTIVE LOG: Log all incoming headers ---
-        // We use JSON stringify/parse to get a clean, loggable object.
-        const allHeaders = JSON.parse(JSON.stringify(headers));
-        yield* Effect.logDebug(
-          {
-            clientId,
-            rpc: rpcTag,
-            headers: allHeaders,
-          },
-          "[AuthMiddleware] Raw incoming headers",
-        );
-        // ---
-
-        const sessionIdOption = getSessionIdFromRequest({ headers });
-
-        // --- 🪵 EXHAUSTIVE LOG: Log cookie parsing result ---
-        yield* Effect.logDebug(
-          {
-            clientId,
-            rpc: rpcTag,
-            cookieHeader: allHeaders.cookie,
-            foundSessionId: Option.isSome(sessionIdOption),
-            sessionIdValue: Option.getOrNull(sessionIdOption),
-          },
-          "[AuthMiddleware] Result of getSessionIdFromRequest",
-        );
-        // ---
-
-        if (Option.isNone(sessionIdOption)) {
-          // --- 🪵 EXHAUSTIVE LOG: Log failure reason ---
-          yield* Effect.logWarning(
-            { clientId, rpc: rpcTag },
-            "[AuthMiddleware] FAILURE: No session cookie found in headers. Failing request.",
-          );
-          // ---
-          return yield* Effect.fail(
-            new AuthError({
-              _tag: "Unauthorized",
-              message: "No session cookie provided",
-            }),
-          );
-        }
-
-        yield* Effect.logDebug(
-          { sessionId: sessionIdOption.value },
-          "[AuthMiddleware] Session ID found, proceeding to validation.",
-        );
-
-        const { user, session } = yield* validate(sessionIdOption.value);
-
-        if (!user || !session) {
-          // --- 🪵 EXHAUSTIVE LOG: Log validation failure ---
-          yield* Effect.logWarning(
-            { clientId, rpc: rpcTag, sessionId: sessionIdOption.value },
-            "[AuthMiddleware] FAILURE: Session ID was present but failed validation (invalid or expired). Failing request.",
-          );
-          // ---
-          return yield* Effect.fail(
-            new AuthError({
-              _tag: "Unauthorized",
-              message: "Invalid or expired session",
-            }),
-          );
-        }
-
-        yield* Metric.increment(sessionValidationSuccessCounter);
-
-        yield* Effect.logInfo(
-          { clientId, userId: user.id, rpc: rpcTag },
-          "[AuthMiddleware] SUCCESS: Session validated successfully. Providing Auth service to handler.",
-        );
-        return { user, session };
-      });
-
-      return logic;
-    };
-  }),
-);
-
-// --- HTTP-SPECIFIC MIDDLEWARE (with added logging for completeness) ---
+// This is now the ONLY authentication middleware. It will wrap both plain HTTP routes
+// and the entire RPC application.
 export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const allHeaders = JSON.parse(JSON.stringify(request.headers));
-    yield* Effect.logDebug(
-      { url: request.url, headers: allHeaders },
-      "[httpAuthMiddleware] Triggered for HTTP request",
-    );
-
     const sessionIdOption = getSessionIdFromRequest({
       headers: request.headers,
     });
 
     if (Option.isNone(sessionIdOption)) {
-      yield* Effect.logWarning(
-        "[httpAuthMiddleware] FAILURE: No session cookie provided.",
-      );
+      // If no session, immediately fail the request with a 401.
       return yield* Effect.fail(
         HttpServerResponse.json({ error: "Unauthorized" }, { status: 401 }),
       );
     }
 
+    // If a session cookie exists, validate it.
     const validationResult = yield* validateSessionEffect(
       sessionIdOption.value,
-    );
+    ).pipe(Effect.provideService(Db, yield* Db));
 
     if (!validationResult.user || !validationResult.session) {
-      yield* Effect.logWarning(
-        "[httpAuthMiddleware] FAILURE: Invalid or expired session.",
-      );
+      // If validation fails, fail with a 401 and include a header to clear the bad cookie.
       return yield* Effect.fail(
         HttpServerResponse.json(
           { error: "Unauthorized" },
@@ -160,12 +58,8 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
       );
     }
 
+    // If validation succeeds, provide the Auth service to the wrapped application.
     yield* Metric.increment(sessionValidationSuccessCounter);
-    yield* Effect.logInfo(
-      { userId: validationResult.user.id, url: request.url },
-      "[httpAuthMiddleware] SUCCESS: Session validated successfully.",
-    );
-
     const authService = Auth.of({
       user: validationResult.user,
       session: validationResult.session,
@@ -174,18 +68,20 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   }),
 );
 
-// ... (rest of the file is unchanged)
 /* ───────────────────────────────── Helper functions ───────────────────────────────── */
 export const getSessionIdFromRequest = (req: {
   headers: Headers;
-}): Option.Option<string> =>
-  Option.fromNullable(req.headers["cookie"]).pipe(
-    Option.map((cookieHeader) => cookieHeader.split("; ")),
+}): Option.Option<string> => {
+  const plainHeaders = JSON.parse(JSON.stringify(req.headers));
+  const cookieHeader = plainHeaders["cookie"] ?? plainHeaders["Cookie"];
+  return Option.fromNullable(cookieHeader).pipe(
+    Option.map((header) => String(header).split("; ")),
     Option.flatMap((cookies) =>
       Option.fromNullable(cookies.find((c) => c.startsWith("session_id="))),
     ),
     Option.flatMap((cookie) => Option.fromNullable(cookie.split("=")[1])),
   );
+};
 
 export const createSessionEffect = (
   userId: UserId,
