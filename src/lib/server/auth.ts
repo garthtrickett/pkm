@@ -8,7 +8,13 @@ import { AuthDatabaseError } from "../../features/auth/Errors";
 import { UserSchema, type User } from "../shared/schemas";
 import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { UserId } from "../../types/generated/public/User";
-import { Headers } from "@effect/platform/Headers";
+// ✅ 1. CORRECTED: Import `HttpMiddleware` directly instead of the `Http` namespace.
+import {
+  HttpMiddleware,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "@effect/platform";
+import type { Headers } from "@effect/platform/Headers";
 import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
 import { sessionValidationSuccessCounter } from "./metrics";
 
@@ -64,6 +70,75 @@ export const AuthMiddlewareLive = Layer.effect(
 
       return logic;
     };
+  }),
+);
+
+// --- HTTP-SPECIFIC MIDDLEWARE ---
+/**
+ * A proper HTTP middleware for authenticating requests.
+ * This is distinct from the RPC-specific middleware. It checks for a session cookie,
+ * validates it, and provides the `Auth` service to the HTTP handler's context.
+ * It has a `Db` requirement and can fail with an `HttpServerResponse`.
+ */
+// ✅ 2. CORRECTED: Use `HttpMiddleware.make` instead of `Http.middleware.make`.
+export const httpAuthMiddleware = HttpMiddleware.make((app) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+
+    // Reuse the same logic for getting the session ID
+    const sessionIdOption = getSessionIdFromRequest({
+      headers: request.headers,
+    });
+
+    if (Option.isNone(sessionIdOption)) {
+      yield* Effect.logWarning(
+        "HTTP Auth Middleware: No session cookie provided.",
+      );
+      // Fail with an HTTP response to short-circuit the request
+      return yield* Effect.fail(
+        HttpServerResponse.json({ error: "Unauthorized" }, { status: 401 }),
+      );
+    }
+
+    // This middleware will have a `Db` dependency, which will be provided by the Layer using it.
+    const validationResult = yield* validateSessionEffect(
+      sessionIdOption.value,
+    );
+
+    if (!validationResult.user || !validationResult.session) {
+      yield* Effect.logWarning(
+        "HTTP Auth Middleware: Invalid or expired session.",
+      );
+      // Also fail with an HTTP response
+      return yield* Effect.fail(
+        HttpServerResponse.json(
+          { error: "Unauthorized" },
+          {
+            status: 401,
+            // Include a header to clear the invalid cookie on the client
+            headers: {
+              "Set-Cookie":
+                "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+            },
+          },
+        ),
+      );
+    }
+
+    yield* Metric.increment(sessionValidationSuccessCounter);
+    yield* Effect.logInfo(
+      { userId: validationResult.user.id },
+      "HTTP Auth Middleware: Session validated successfully.",
+    );
+
+    // Create an instance of the Auth service
+    const authService = Auth.of({
+      user: validationResult.user,
+      session: validationResult.session,
+    });
+
+    // Provide the Auth service to the next handler in the chain (`app`)
+    return yield* Effect.provideService(app, Auth, authService);
   }),
 );
 

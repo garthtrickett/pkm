@@ -18,6 +18,9 @@
     "lib": [
       "es2022",
       "DOM"
+    ],
+    "types": [
+      "bun-types" // gives you `declare const Bun …`
     ]
   },
   "include": [

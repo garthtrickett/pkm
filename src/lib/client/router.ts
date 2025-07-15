@@ -1,17 +1,18 @@
+// src/lib/client/router.ts
 import { Effect } from "effect";
 import { html, type TemplateResult } from "lit-html";
-import { LocationService } from "./LocationService";
 import { clientLog, RpcLogClient } from "./clientLog";
+import { LocationService } from "./LocationService";
 
-// --- Import your page components ---
+// --- Import page components ---
 import "../../components/pages/login-page";
 import "../../components/pages/signup-page";
 import "../../components/pages/check-email-page";
-// ✅ FIX 3: Import the VerifyEmailPage class definition
 import "../../components/pages/verify-email-page";
 import type { VerifyEmailPage } from "../../components/pages/verify-email-page";
+import "../../components/pages/profile-page"; // ✅ ADDED
 
-// --- Placeholder Page Components ---
+// ... (NotesView, UnauthorizedView, NotFoundView placeholders are unchanged)
 const NotesView = (): ViewResult => ({ template: html`<div>Notes Page</div>` });
 const UnauthorizedView = (): ViewResult => ({
   template: html`<div>403 Unauthorized</div>`,
@@ -20,7 +21,6 @@ const NotFoundView = (): ViewResult => ({
   template: html`<div>404 Not Found</div>`,
 });
 
-// --- Types ---
 export interface ViewResult {
   template: TemplateResult;
   cleanup?: () => void;
@@ -35,8 +35,8 @@ export interface Route {
 }
 type MatchedRoute = Route & { params: string[] };
 
-// --- Route Definitions ---
 const routes: Route[] = [
+  // ... (existing routes are unchanged)
   { pattern: /^\/$/, view: NotesView, meta: { requiresAuth: true } },
   {
     pattern: /^\/login$/,
@@ -56,17 +56,22 @@ const routes: Route[] = [
   {
     pattern: /^\/verify-email\/([^/]+)$/,
     view: (token: string) => {
-      // ✅ FIX 3: Cast the created element to its specific class
       const el = document.createElement("verify-email-page") as VerifyEmailPage;
       el.token = token;
       return el;
     },
     meta: { isPublicOnly: true },
   },
+  // ✅ ADDED: Route for the new profile page
+  {
+    pattern: /^\/profile$/,
+    view: () => document.createElement("profile-page"),
+    meta: { requiresAuth: true },
+  },
   { pattern: /^\/unauthorized$/, view: UnauthorizedView, meta: {} },
 ];
 
-// --- Router Logic ---
+// ... (matchRoute and navigate functions are unchanged)
 export const matchRoute = (path: string): Effect.Effect<MatchedRoute> =>
   Effect.gen(function* () {
     for (const route of routes) {

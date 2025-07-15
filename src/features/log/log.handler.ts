@@ -2,7 +2,6 @@
 import { RpcLog } from "../../lib/shared/log-schema"; // Shared schema import
 import { Effect } from "effect";
 
-
 /**
  * A robust stringifier for unknown values to satisfy the linter and prevent '[object Object]'.
  * @param value The value to stringify.
@@ -42,7 +41,7 @@ const safeStringify = (value: unknown): string => {
   return "[Unknown Type]";
 };
 
-export const RpcLogLayer = RpcLog.toLayer({
+export const RpcLogHandlers = RpcLog.of({
   log: (payload) =>
     Effect.gen(function* () {
       const message = payload.args.map(safeStringify).join(" ");

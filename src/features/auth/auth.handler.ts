@@ -53,7 +53,7 @@ const createVerificationToken = (
     return verificationToken;
   });
 
-export const AuthRpcLayer = AuthRpc.toLayer({
+export const AuthRpcHandlers = AuthRpc.of({
   signup: (credentials) =>
     Effect.gen(function* () {
       yield* Effect.logInfo({ email: credentials.email }, "Signup attempt");
@@ -204,7 +204,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
     ),
   login: (credentials) =>
     Effect.gen(function* () {
-      // ✅ MODIFIED: Added more detailed logging
       yield* Effect.logInfo(
         { email: credentials.email },
         "Login handler started",
@@ -237,7 +236,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
       const validPassword = yield* Effect.tryPromise({
         try: () => argon2id.verify(user.password_hash, credentials.password),
         catch: (e) => {
-          // Log the specific argon error and treat it as an invalid password
           Effect.logError("Password verification failed with an error", e);
           return false;
         },
@@ -272,7 +270,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
         "Login successful, session created",
       );
 
-      // ✅ ADDED: Log right before returning success
       yield* Effect.logInfo(
         { userId: user.id },
         "Login handler successful, returning response",
@@ -296,7 +293,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
           ),
       }),
       Effect.catchAll((error) =>
-        // ✅ MODIFIED: Add more context to the final catch-all
         Effect.logError("Unhandled error during login", {
           cause: error,
           email: credentials.email,
@@ -338,4 +334,53 @@ export const AuthRpcLayer = AuthRpc.toLayer({
         ),
       );
     }),
+
+  changePassword: ({ oldPassword, newPassword }) =>
+    Effect.gen(function* () {
+      const { user } = yield* Auth;
+      const db = yield* Db;
+      const argon2id = new Argon2id();
+
+      // ✅ FIX: Use Effect.promise and catch potential defects.
+      // This keeps the error channel clean and handles the boolean logic correctly.
+      const validPassword = yield* Effect.promise(() =>
+        argon2id.verify(user!.password_hash, oldPassword),
+      ).pipe(Effect.catchAll(() => Effect.succeed(false)));
+
+      if (!validPassword) {
+        return yield* Effect.fail(new InvalidCredentialsError());
+      }
+
+      const newPasswordHash = yield* Effect.tryPromise({
+        try: () => argon2id.hash(newPassword),
+        catch: (cause) => new PasswordHashingError({ cause }),
+      });
+
+      yield* Effect.tryPromise({
+        try: () =>
+          db
+            .updateTable("user")
+            .set({ password_hash: newPasswordHash })
+            .where("id", "=", user!.id)
+            .execute(),
+        catch: (cause) => new PasswordHashingError({ cause }),
+      });
+    }).pipe(
+      Effect.catchTags({
+        InvalidCredentialsError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "Unauthorized",
+              message: "Incorrect old password.",
+            }),
+          ),
+        PasswordHashingError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "InternalServerError",
+              message: "Could not update password.",
+            }),
+          ),
+      }),
+    ),
 });

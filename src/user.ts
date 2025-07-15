@@ -17,7 +17,7 @@ export const UserRpcs = RpcGroup.make(
   }),
 ).middleware(AuthMiddleware);
 
-export const RpcUserLayer = UserRpcs.toLayer({
+export const RpcUserHandlers = UserRpcs.of({
   GetUser: () =>
     Effect.gen(function* () {
       const { user } = yield* Auth;
