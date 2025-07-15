@@ -5,7 +5,11 @@ import { appStateStream } from "../../lib/client/lifecycle";
 import { matchRoute, navigate } from "../../lib/client/router";
 import { AppLayout } from "./AppLayout";
 import { clientLog } from "../../lib/client/clientLog";
-import { runClientPromise, runClientUnscoped, ViewManager } from "../../lib/client/runtime";
+import {
+  runClientPromise,
+  runClientUnscoped,
+  ViewManager,
+} from "../../lib/client/runtime";
 import { type AuthModel } from "../../lib/client/stores/authStore";
 
 const processStateChange = (
@@ -15,11 +19,10 @@ const processStateChange = (
   Effect.gen(function* () {
     const viewManager = yield* ViewManager;
 
-    yield* clientLog(
-      "info",
-      "[app-shell] processStateChange triggered",
-      { path, authStatus: auth.status },
-    );
+    yield* clientLog("info", "[app-shell] processStateChange triggered", {
+      path,
+      authStatus: auth.status,
+    });
 
     if (auth.status === "initializing" || auth.status === "authenticating") {
       yield* clientLog("debug", "[app-shell] Rendering loading state.");
@@ -64,7 +67,15 @@ const processStateChange = (
       viewResult instanceof HTMLElement ? undefined : viewResult.cleanup;
     yield* viewManager.set(pageCleanup);
     yield* Effect.sync(() =>
-      render(AppLayout({ children: pageTemplate }), appRoot),
+      // ✅ CONDITIONAL LAYOUT:
+      // If the route is public-only (like login/signup), don't wrap it in the main AppLayout.
+      // Otherwise, wrap it to include the header.
+      render(
+        route.meta.isPublicOnly
+          ? pageTemplate
+          : AppLayout({ children: pageTemplate }),
+        appRoot,
+      ),
     );
   });
 
