@@ -43,8 +43,6 @@ type AuthAction =
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
 
 export const proposeAuthAction = (action: AuthAction): void => {
-  // ✅ MODIFIED: Add synchronous console log for immediate feedback
-  console.log(`[authStore] Proposing action: ${action.type}`, action);
   runClientUnscoped(
     clientLog("info", `[authStore] Proposing action: ${action.type}`),
   );

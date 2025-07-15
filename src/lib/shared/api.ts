@@ -36,6 +36,18 @@ const UnprotectedAuthRpc = RpcGroup.make(
       password: Schema.String,
     },
   }),
+
+  // ✅ Add the new email verification definition here
+  Rpc.make("verifyEmail", {
+    success: Schema.Struct({
+      user: UserSchema,
+      sessionId: Schema.String,
+    }),
+    error: AuthError,
+    payload: {
+      token: Schema.String,
+    },
+  }),
 );
 
 // Group for routes that ARE protected by authentication.

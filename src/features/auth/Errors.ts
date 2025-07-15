@@ -50,7 +50,9 @@ export class TokenCreationError extends Data.TaggedError("TokenCreationError")<{
 /**
  * Error for when a provided token is invalid or expired.
  */
-export class TokenInvalidError extends Data.TaggedError("TokenInvalidError") {}
+export class TokenInvalidError extends Data.TaggedError("TokenInvalidError")<{
+  cause?: unknown;
+}> {}
 
 /**
  * Error for when sending an email fails.

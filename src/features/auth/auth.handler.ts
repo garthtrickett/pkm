@@ -8,29 +8,57 @@ import {
 } from "../../lib/server/auth";
 import { Db } from "../../db/DbTag";
 import { Argon2id } from "oslo/password";
-// ✅ Add new error for signup
 import {
   EmailAlreadyExistsError,
   EmailNotVerifiedError,
   InvalidCredentialsError,
-  // ✅ FIX 1: Import the PasswordHashingError
   PasswordHashingError,
+  TokenCreationError,
+  TokenInvalidError,
 } from "./Errors";
 import { AuthError } from "../../lib/shared/auth";
-import type { User } from "../../lib/shared/schemas";
+import type { User, UserId } from "../../lib/shared/schemas";
+import { generateId } from "../../lib/server/utils";
+import { Crypto } from "../../lib/server/crypto";
+import { createDate, TimeSpan, isWithinExpirationDate } from "oslo";
+import type { EmailVerificationTokenId } from "../../types/generated/public/EmailVerificationToken";
 
 // A placeholder for a future email service.
 const sendVerificationEmail = (email: string, token: string) =>
   Effect.logInfo(
-    { email, token },
+    { email, verificationLink: `http://localhost:5173/verify-email/${token}` },
     "TODO: Implement email sending. Sending verification email.",
   );
+
+const createVerificationToken = (
+  userId: UserId,
+  email: string,
+): Effect.Effect<string, TokenCreationError, Db | Crypto> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const verificationToken = yield* generateId(40);
+    yield* Effect.tryPromise({
+      try: () =>
+        db
+          .insertInto("email_verification_token")
+          .values({
+            id: verificationToken as EmailVerificationTokenId,
+            user_id: userId,
+            email: email,
+            expires_at: createDate(new TimeSpan(2, "h")),
+          })
+          .execute(),
+      catch: (cause) => new TokenCreationError({ cause }),
+    });
+    return verificationToken;
+  });
 
 export const AuthRpcLayer = AuthRpc.toLayer({
   signup: (credentials) =>
     Effect.gen(function* () {
       yield* Effect.logInfo({ email: credentials.email }, "Signup attempt");
       const db = yield* Db;
+      const crypto = yield* Crypto;
 
       const existingUser = yield* Effect.promise(() =>
         db
@@ -47,7 +75,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
       const argon2id = new Argon2id();
       const passwordHash = yield* Effect.tryPromise({
         try: () => argon2id.hash(credentials.password),
-        // ✅ FIX 2: Use a typed error here instead of a generic Error
         catch: (cause) => new PasswordHashingError({ cause }),
       });
 
@@ -68,7 +95,10 @@ export const AuthRpcLayer = AuthRpc.toLayer({
         "User created successfully",
       );
 
-      const verificationToken = `fake-token-for-${newUser.id}`;
+      const verificationToken = yield* createVerificationToken(
+        newUser.id,
+        newUser.email,
+      ).pipe(Effect.provideService(Crypto, crypto));
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
       return newUser as User;
@@ -81,7 +111,6 @@ export const AuthRpcLayer = AuthRpc.toLayer({
               message: "A user with this email already exists.",
             }),
           ),
-        // ✅ FIX 3: Handle the new typed error and map it to a generic server error
         PasswordHashingError: (error) =>
           Effect.logError("Password hashing failed during signup", error).pipe(
             Effect.andThen(
@@ -108,7 +137,71 @@ export const AuthRpcLayer = AuthRpc.toLayer({
       ),
     ),
 
-  // ... (rest of the file is unchanged)
+  verifyEmail: ({ token }) =>
+    Effect.gen(function* () {
+      yield* Effect.logInfo(
+        { tokenPrefix: token.substring(0, 8) },
+        "Email verification attempt",
+      );
+      const db = yield* Db;
+      const crypto = yield* Crypto;
+
+      const storedToken = yield* Effect.promise(() =>
+        db
+          .deleteFrom("email_verification_token")
+          .where("id", "=", token as EmailVerificationTokenId)
+          .returningAll()
+          .executeTakeFirst(),
+      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
+
+      if (!storedToken || !isWithinExpirationDate(storedToken.expires_at)) {
+        return yield* Effect.fail(
+          new TokenInvalidError({ cause: "Token not found or expired" }),
+        );
+      }
+
+      const user = yield* Effect.promise(() =>
+        db
+          .updateTable("user")
+          .set({ email_verified: true })
+          .where("id", "=", storedToken.user_id)
+          .returningAll()
+          .executeTakeFirstOrThrow(),
+      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
+
+      yield* Effect.logInfo({ userId: user.id }, "Email verified successfully");
+
+      const sessionId = yield* createSessionEffect(user.id).pipe(
+        Effect.provideService(Crypto, crypto),
+      );
+
+      return { user: user as User, sessionId };
+    }).pipe(
+      Effect.catchTags({
+        TokenInvalidError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "BadRequest",
+              message: "Invalid or expired verification token.",
+            }),
+          ),
+      }),
+      Effect.catchAll((error) =>
+        Effect.logError(
+          "Unhandled error during email verification",
+          error,
+        ).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new AuthError({
+                _tag: "InternalServerError",
+                message: "An internal server error occurred.",
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
   login: (credentials) =>
     Effect.gen(function* () {
       // ✅ MODIFIED: Added more detailed logging

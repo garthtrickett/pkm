@@ -1,6 +1,6 @@
 {
   "type": "module",
-  "author": "Sandro Maglione <sandro@sandromaglione.com>",
+  "author": "Garth Trickett <garthtrickett@gmail.com>",
   "license": "MIT",
   "scripts": {
     "dev": "concurrently \"npm:dev:client\" \"npm:dev:server\"",

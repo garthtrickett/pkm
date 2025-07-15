@@ -6,6 +6,10 @@ import { clientLog, RpcLogClient } from "./clientLog";
 // --- Import your page components ---
 import "../../components/pages/login-page";
 import "../../components/pages/signup-page";
+import "../../components/pages/check-email-page";
+// ✅ FIX 3: Import the VerifyEmailPage class definition
+import "../../components/pages/verify-email-page";
+import type { VerifyEmailPage } from "../../components/pages/verify-email-page";
 
 // --- Placeholder Page Components ---
 const NotesView = (): ViewResult => ({ template: html`<div>Notes Page</div>` });
@@ -42,6 +46,21 @@ const routes: Route[] = [
   {
     pattern: /^\/signup$/,
     view: () => document.createElement("signup-page"),
+    meta: { isPublicOnly: true },
+  },
+  {
+    pattern: /^\/check-email$/,
+    view: () => document.createElement("check-email-page"),
+    meta: { isPublicOnly: true },
+  },
+  {
+    pattern: /^\/verify-email\/([^/]+)$/,
+    view: (token: string) => {
+      // ✅ FIX 3: Cast the created element to its specific class
+      const el = document.createElement("verify-email-page") as VerifyEmailPage;
+      el.token = token;
+      return el;
+    },
     meta: { isPublicOnly: true },
   },
   { pattern: /^\/unauthorized$/, view: UnauthorizedView, meta: {} },

@@ -8,7 +8,7 @@ import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/auth";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
-import styles from "./LoginPage.module.css"; // Re-using login styles for consistency
+import styles from "./SignupPage.module.css";
 
 // --- Model ---
 interface Model {
@@ -107,7 +107,11 @@ export class SignupPage extends LitElement {
       // ✅ FIX 3: Add Effect.asVoid to match the function's return signature
       return signupEffect.pipe(
         Effect.matchEffect({
-          onSuccess: () => this._propose({ type: "SIGNUP_SUCCESS" }),
+          onSuccess: () => {
+            // Instead of just setting success, navigate to the check-email page
+            runClientUnscoped(navigate("/check-email"));
+            return this._propose({ type: "SIGNUP_SUCCESS" });
+          },
           onFailure: (error) => {
             let message: string;
             // The error here is one of our custom component errors, so this switch is safe
@@ -149,31 +153,7 @@ export class SignupPage extends LitElement {
   }
 
   override render(): TemplateResult {
-    if (this.model.isSuccess) {
-      return html`
-        <div class=${styles.container}>
-          <div class=${styles.formWrapper}>
-            <h2 class=${styles.title}>Signup Successful!</h2>
-            <p class="text-center">
-              Please check your email to verify your account.
-            </p>
-            <div class="mt-4 text-center">
-              <a
-                href="/login"
-                class=${styles.link}
-                @click=${(e: Event) => {
-                  e.preventDefault();
-                  runClientUnscoped(navigate("/login"));
-                }}
-              >
-                Return to Login
-              </a>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
+    // The success view is now handled by the /check-email page, so we can remove it.
     return html`
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
