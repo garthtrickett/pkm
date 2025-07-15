@@ -73,7 +73,7 @@ const processStateChange = (
       render(
         route.meta.isPublicOnly
           ? pageTemplate
-          : AppLayout({ children: pageTemplate }),
+          : AppLayout({ auth, children: pageTemplate }),
         appRoot,
       ),
     );

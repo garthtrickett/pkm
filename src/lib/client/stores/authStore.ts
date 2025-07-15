@@ -1,15 +1,12 @@
 // src/lib/client/stores/authStore.ts
 import { signal } from "@preact/signals-core";
 import { Data, Effect, Layer, Queue, Stream } from "effect";
-import type { User } from "../../../types/generated/public/User";
+import type { PublicUser } from "../../shared/schemas";
 import { runClientUnscoped } from "../runtime";
 import { AuthError } from "../../shared/api";
 import { clientLog } from "../clientLog";
 import { ClientLive } from "../runtime";
-// ✅ Import the RPC client from its new location
 import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "../rpc";
-
-// --- RPC Client Service Definition (REMOVED FROM HERE) ---
 
 // --- Model & State ---
 export interface AuthModel {
@@ -18,7 +15,7 @@ export interface AuthModel {
     | "unauthenticated"
     | "authenticating"
     | "authenticated";
-  readonly user: User | null;
+  readonly user: PublicUser | null;
 }
 
 export const authState = signal<AuthModel>({
@@ -34,11 +31,11 @@ class AuthCheckError extends Data.TaggedError("AuthCheckError")<{
 // --- Actions ---
 type AuthAction =
   | { type: "AUTH_CHECK_START" }
-  | { type: "AUTH_CHECK_SUCCESS"; payload: User }
+  | { type: "AUTH_CHECK_SUCCESS"; payload: PublicUser }
   | { type: "AUTH_CHECK_FAILURE"; payload: AuthError | AuthCheckError }
   | { type: "LOGOUT_START" }
   | { type: "LOGOUT_SUCCESS" }
-  | { type: "SET_AUTHENTICATED"; payload: User };
+  | { type: "SET_AUTHENTICATED"; payload: PublicUser };
 
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
 
@@ -125,7 +122,14 @@ const handleAuthAction = (
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
       }
-      // ✅ ADDED: Log when SET_AUTHENTICATED is handled
+
+      case "LOGOUT_SUCCESS": {
+        document.cookie =
+          "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+        yield* clientLog("info", "[authStore] Client session cookie cleared.");
+        break;
+      }
+
       case "SET_AUTHENTICATED": {
         yield* clientLog(
           "info",

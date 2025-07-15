@@ -4,13 +4,12 @@ import { customElement, state } from "lit/decorators.js";
 import { Effect, Data, Queue, Fiber, Stream } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
-// ✅ FIX 1: Correct the import paths
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
 import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
-import type { User } from "../../lib/shared/schemas";
+import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
 
 // --- Model ---
@@ -37,7 +36,7 @@ type Action =
   | { type: "UPDATE_EMAIL"; payload: string }
   | { type: "UPDATE_PASSWORD"; payload: string }
   | { type: "LOGIN_START" }
-  | { type: "LOGIN_SUCCESS"; payload: { user: User; sessionId: string } }
+  | { type: "LOGIN_SUCCESS"; payload: { user: PublicUser; sessionId: string } }
   | { type: "LOGIN_ERROR"; payload: string };
 
 // --- Pure Update Function ---
@@ -98,7 +97,6 @@ export class LoginPage extends LitElement {
         );
       });
 
-      // ✅ FIX 2: Use `Effect.matchEffect` for handlers that return Effects
       return loginEffect.pipe(
         Effect.matchEffect({
           onSuccess: (result) =>
@@ -116,7 +114,6 @@ export class LoginPage extends LitElement {
                 message = "An unknown error occurred. Please try again.";
                 break;
             }
-            // Return the Effect from _propose directly
             return this._propose({ type: "LOGIN_ERROR", payload: message });
           },
         }),

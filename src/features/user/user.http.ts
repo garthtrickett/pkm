@@ -1,23 +1,25 @@
 // src/features/user/user.http.ts
+
 import {
   HttpServerRequest,
   HttpServerResponse,
   Multipart,
+  HttpRouter, // Import HttpRouter
 } from "@effect/platform";
 import { Effect } from "effect";
 import { Db } from "../../db/DbTag";
-import { Auth, httpAuthMiddleware } from "../../lib/server/auth";
+import { Auth } from "../../lib/server/auth"; // Only import the Auth service, not the middleware
 import { S3Uploader } from "../../lib/server/s3";
 import { UserApi } from "../../lib/shared/user-api";
-import { HttpRouter } from "@effect/platform";
 
-// ✅ EXPORT the router directly.
+// ✅ CHANGE: Export a clean router without any middleware applied.
+// Its handlers will now require `Auth`, `Db`, and `S3Uploader`.
 export const UserHttpRoutes = HttpRouter.empty.pipe(
   HttpRouter.post(
-    "/api/user/avatar",
+    "/avatar", // Note: the path is now relative to where it will be mounted
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      const { user } = yield* Auth;
+      const { user } = yield* Auth; // The handler still needs the Auth context
 
       const persisted = yield* request.multipart.pipe(
         Effect.catchTag("MultipartError", (error) =>
@@ -62,6 +64,4 @@ export const UserHttpRoutes = HttpRouter.empty.pipe(
       )({ avatarUrl: newAvatarUrl });
     }),
   ),
-  // This middleware requires the Db service, which we'll provide in bun-server.ts
-  HttpRouter.use(httpAuthMiddleware),
 );

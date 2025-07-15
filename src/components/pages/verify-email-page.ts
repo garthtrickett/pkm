@@ -7,7 +7,7 @@ import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
 import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
-import type { User } from "../../lib/shared/schemas";
+import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
 import { RpcLogClient } from "../../lib/client/clientLog";
 import type { LocationService } from "../../lib/client/LocationService";
@@ -29,7 +29,10 @@ class UnknownVerificationError extends Data.TaggedError(
 // --- Actions ---
 type Action =
   | { type: "VERIFY_START" }
-  | { type: "VERIFY_SUCCESS"; payload: { user: User; sessionId: string } }
+  | {
+      type: "VERIFY_SUCCESS";
+      payload: { user: PublicUser; sessionId: string };
+    }
   | { type: "VERIFY_ERROR"; payload: string };
 
 // --- Pure Update Function ---

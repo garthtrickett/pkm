@@ -1,7 +1,7 @@
 // src/lib/shared/api.ts
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
-import { UserSchema } from "./schemas";
+import { PublicUserSchema } from "./schemas";
 import { AuthMiddleware, AuthError } from "./auth";
 
 export { AuthError };
@@ -16,7 +16,7 @@ export class RequestError extends Schema.Class<RequestError>("RequestError")({
 const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("login", {
     success: Schema.Struct({
-      user: UserSchema,
+      user: PublicUserSchema,
       sessionId: Schema.String,
     }),
     error: AuthError,
@@ -27,7 +27,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
   }),
 
   Rpc.make("signup", {
-    success: UserSchema, // On success, it returns the created user
+    success: PublicUserSchema, // On success, it returns the created user
     error: AuthError,
     payload: {
       email: Schema.String,
@@ -37,7 +37,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
 
   Rpc.make("verifyEmail", {
     success: Schema.Struct({
-      user: UserSchema,
+      user: PublicUserSchema,
       sessionId: Schema.String,
     }),
     error: AuthError,
@@ -50,14 +50,13 @@ const UnprotectedAuthRpc = RpcGroup.make(
 // Group for routes that ARE protected by authentication.
 const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("me", {
-    success: UserSchema,
+    success: PublicUserSchema,
     error: AuthError,
   }),
   Rpc.make("logout", {
     success: Schema.Void,
     error: AuthError,
   }),
-  // ✅ ADDED: New RPC for changing password.
   Rpc.make("changePassword", {
     success: Schema.Void,
     error: AuthError,

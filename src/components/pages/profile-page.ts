@@ -8,11 +8,12 @@ import {
   proposeAuthAction,
   type AuthModel,
 } from "../../lib/client/stores/authStore";
-import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
+import { RpcAuthClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./ProfilePage.module.css";
+import { clientLog } from "../../lib/client/clientLog";
 
 // --- Custom Error Types ---
 class PasswordsDoNotMatchError extends Data.TaggedError(
@@ -138,11 +139,28 @@ export class ProfilePage extends LitElement {
         return Effect.void;
       }
 
+      // --- 🪵 DEBUG LOG: Log password lengths before sending ---
+      runClientUnscoped(
+        clientLog("debug", "[profile-page] Dispatching changePassword RPC", {
+          userId: this.model.auth.user?.id,
+          oldPasswordLength: oldPassword.length,
+          newPasswordLength: newPassword.length,
+        }),
+      );
+
       const changePasswordEffect = Effect.gen(function* () {
         const rpcClient = yield* RpcAuthClient;
         return yield* rpcClient
           .changePassword({ oldPassword, newPassword })
           .pipe(
+            Effect.tapError((error) =>
+              // --- 🪵 DEBUG LOG: Log the raw error from the server ---
+              clientLog(
+                "error",
+                "[profile-page] Received error from changePassword RPC",
+                { error },
+              ),
+            ),
             Effect.mapError((error) => {
               if (error instanceof AuthError) {
                 if (error._tag === "Unauthorized") {
@@ -247,9 +265,11 @@ export class ProfilePage extends LitElement {
     }
   }
 
+  // ✅ THE FIX: Remove `.provide(RpcAuthClientLive)`
+  // This stream will now inherit its context (including the correct HttpClient
+  // needed by RpcAuthClient) from the `runClientUnscoped` function that calls it.
   private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
     Stream.runForEach(this._handleAction),
-    Effect.provide(RpcAuthClientLive),
   );
 
   override connectedCallback(): void {

@@ -1,13 +1,12 @@
 // src/lib/shared/schemas.ts
 import { Schema } from "effect";
+
 import type { NoteId, Note } from "../../types/generated/public/Note";
 import type { UserId, User } from "../../types/generated/public/User"; // Original import
 import type { BlockId, Block } from "../../types/generated/public/Block";
 
-// ✅ FIX: Re-export the database types so other modules can use them.
+// Re-export the database types so other modules can use them.
 export type { User, Note, Block, UserId, NoteId, BlockId };
-
-// ... (the rest of the file remains the same)
 
 const LenientDateSchema = Schema.Union(
   Schema.DateFromSelf,
@@ -57,10 +56,20 @@ export const UserSchema: Schema.Schema<User, any> = Schema.Struct({
   ),
   password_hash: Schema.String,
   created_at: LenientDateSchema,
-  permissions: Schema.Union(Schema.mutable(Schema.Array(Schema.String)), Schema.Null),
+  permissions: Schema.Union(
+    Schema.mutable(Schema.Array(Schema.String)),
+    Schema.Null,
+  ),
   avatar_url: Schema.Union(Schema.String, Schema.Null),
   email_verified: Schema.Boolean,
 });
+
+/**
+ * A version of the User schema that is safe to send to the client.
+ * It omits the sensitive password_hash.
+ */
+export const PublicUserSchema = UserSchema.pipe(Schema.omit("password_hash"));
+export type PublicUser = typeof PublicUserSchema.Type;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const BlockSchema: Schema.Schema<Block, any> = Schema.Struct({

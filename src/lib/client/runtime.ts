@@ -1,10 +1,11 @@
 // src/lib/client/runtime.ts
+
 import { Cause, Context, Effect, Exit, Layer, Runtime, Scope } from "effect";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
+import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
 import { LocationLive, type LocationService } from "./LocationService";
-// ✅ Import from the new, non-circular location
-import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "./rpc";
+import { RpcAuthClient, RpcLogClient } from "./rpc";
 
 // --- Service Definitions ---
 
@@ -23,7 +24,9 @@ export const ViewManagerLive = Layer.sync(ViewManager, () => {
       Effect.sync(() => {
         clientLog(
           "debug",
-          `ViewManager setting new cleanup function. Old one was ${currentCleanup ? "defined" : "undefined"}.`,
+          `ViewManager setting new cleanup function. Old one was ${
+            currentCleanup ? "defined" : "undefined"
+          }.`,
         );
         currentCleanup = cleanup;
       }),
@@ -37,7 +40,6 @@ export const ViewManagerLive = Layer.sync(ViewManager, () => {
     },
   });
 });
-
 // --- Final Context and Layer ---
 
 export type ClientContext =
@@ -47,34 +49,55 @@ export type ClientContext =
   | HttpClient.HttpClient
   | RpcAuthClient;
 
+// --- 🪵 EXHAUSTIVE LOG ---
+const RequestInitLive = Layer.succeed(FetchRequestInit, {
+  credentials: "include",
+}).pipe(
+  Layer.tap(() =>
+    Effect.logDebug(
+      "[runtime] RequestInitLive created with credentials: 'include'",
+    ),
+  ),
+);
+
+// --- 🪵 EXHAUSTIVE LOG ---
+const CustomHttpClientLive = FetchHttpClient.layer.pipe(
+  Layer.provide(RequestInitLive),
+  Layer.tap(() => Effect.logDebug("[runtime] CustomHttpClientLive created")),
+);
+
+const rpcLayers = Layer.merge(RpcAuthClient.Default, RpcLogClient.Default);
+
+// --- 🪵 EXHAUSTIVE LOG ---
+const rpcAndHttpLayer = rpcLayers.pipe(
+  Layer.provideMerge(CustomHttpClientLive),
+  Layer.tap(() =>
+    Effect.logDebug(
+      "[runtime] rpcAndHttpLayer created by providing HttpClient to rpcLayers",
+    ),
+  ),
+);
+
 export const ClientLive: Layer.Layer<ClientContext, never, never> =
-  Layer.mergeAll(
-    LocationLive,
-    RpcLogClient.Default,
-    ViewManagerLive,
-    RpcAuthClientLive,
-  ).pipe(
-    Layer.provide(FetchHttpClient.layer),
-    Layer.merge(FetchHttpClient.layer),
-  );
+  Layer.mergeAll(LocationLive, ViewManagerLive, rpcAndHttpLayer);
 
 // --- Runtime Setup ---
 
 const appScope = Effect.runSync(Scope.make());
 
+// --- 🪵 EXHAUSTIVE LOG ---
 const AppRuntime = Effect.runSync(
   Scope.extend(
     Layer.toRuntime(ClientLive).pipe(
       Effect.tap(() =>
-        Effect.logDebug(
-          "ClientLive Layer has been built and is being converted to a Runtime.",
+        Effect.logInfo(
+          "[runtime] ClientLive Layer has been built and is being converted to a Runtime.",
         ),
       ),
     ),
     appScope,
   ),
 );
-
 export const clientRuntime = AppRuntime;
 
 export const runClientPromise = <A, E>(
@@ -88,7 +111,6 @@ export const runClientUnscoped = <A, E>(
 ) => {
   return Runtime.runFork(clientRuntime)(effect);
 };
-
 export const shutdownClient = () =>
   Effect.runPromise(Scope.close(appScope, Exit.succeed(undefined)));
 

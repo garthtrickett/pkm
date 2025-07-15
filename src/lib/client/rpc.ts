@@ -1,7 +1,6 @@
 // src/lib/client/rpc.ts
 import { RpcClient, RpcSerialization } from "@effect/rpc";
 import { Effect, Layer } from "effect";
-import { FetchHttpClient } from "@effect/platform";
 import { AuthRpc } from "../shared/api";
 import { RpcLog } from "../shared/log-schema";
 
@@ -18,9 +17,9 @@ export class RpcAuthClient extends Effect.Service<RpcAuthClient>()(
   },
 ) {}
 
-export const RpcAuthClientLive = RpcAuthClient.Default.pipe(
-  Layer.provide(FetchHttpClient.layer),
-);
+// ✅ FIX: Remove the specific HttpClient provider from here.
+// We will now provide a centrally configured client in runtime.ts.
+export const RpcAuthClientLive = RpcAuthClient.Default;
 
 // --- Log RPC Client ---
 const LogProtocolLive = RpcClient.layerProtocolHttp({

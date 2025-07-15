@@ -17,7 +17,7 @@ import {
   TokenInvalidError,
 } from "./Errors";
 import { AuthError } from "../../lib/shared/auth";
-import type { User, UserId } from "../../lib/shared/schemas";
+import type { UserId } from "../../lib/shared/schemas";
 import { generateId } from "../../lib/server/utils";
 import { Crypto } from "../../lib/server/crypto";
 import { createDate, TimeSpan, isWithinExpirationDate } from "oslo";
@@ -101,7 +101,8 @@ export const AuthRpcHandlers = AuthRpc.of({
       ).pipe(Effect.provideService(Crypto, crypto));
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
-      return newUser as User;
+      const { password_hash, ...publicUser } = newUser;
+      return publicUser;
     }).pipe(
       Effect.catchTags({
         EmailAlreadyExistsError: () =>
@@ -175,7 +176,8 @@ export const AuthRpcHandlers = AuthRpc.of({
         Effect.provideService(Crypto, crypto),
       );
 
-      return { user: user as User, sessionId };
+      const { password_hash, ...publicUser } = user;
+      return { user: publicUser, sessionId };
     }).pipe(
       Effect.catchTags({
         TokenInvalidError: () =>
@@ -210,15 +212,14 @@ export const AuthRpcHandlers = AuthRpc.of({
       );
       const db = yield* Db;
 
-      const userResult = yield* Effect.promise(() =>
+      const user = yield* Effect.promise(() =>
         db
           .selectFrom("user")
           .selectAll()
           .where("email", "=", credentials.email)
-          .execute(),
+          .executeTakeFirst(),
       );
 
-      const user = userResult[0];
       yield* Effect.logDebug(
         { userFound: !!user },
         "User lookup result from DB",
@@ -270,11 +271,8 @@ export const AuthRpcHandlers = AuthRpc.of({
         "Login successful, session created",
       );
 
-      yield* Effect.logInfo(
-        { userId: user.id },
-        "Login handler successful, returning response",
-      );
-      return { user, sessionId };
+      const { password_hash, ...publicUser } = user;
+      return { user: publicUser, sessionId };
     }).pipe(
       Effect.catchTags({
         InvalidCredentialsError: () =>
@@ -312,12 +310,9 @@ export const AuthRpcHandlers = AuthRpc.of({
   me: () =>
     Effect.gen(function* () {
       const { user } = yield* Auth;
-      const safeUserLog = {
-        userId: user!.id,
-        userEmail: user!.email,
-      };
-      yield* Effect.logDebug(safeUserLog, `'me' request successful`);
-      return user!;
+      yield* Effect.logDebug({ userId: user!.id }, `'me' request successful`);
+      const { password_hash, ...publicUser } = user!;
+      return publicUser;
     }),
 
   logout: () =>
@@ -337,34 +332,96 @@ export const AuthRpcHandlers = AuthRpc.of({
 
   changePassword: ({ oldPassword, newPassword }) =>
     Effect.gen(function* () {
-      const { user } = yield* Auth;
-      const db = yield* Db;
-      const argon2id = new Argon2id();
+      const { user: contextUser } = yield* Auth;
 
-      // ✅ FIX: Use Effect.promise and catch potential defects.
-      // This keeps the error channel clean and handles the boolean logic correctly.
+      // --- 🪵 EXHAUSTIVE LOG: Confirm handler entry with context ---
+      if (!contextUser) {
+        yield* Effect.logError(
+          "[changePassword] CRITICAL: Handler entered but contextUser is null. This should not happen after AuthMiddleware.",
+        );
+        return yield* Effect.fail(
+          new AuthError({
+            _tag: "InternalServerError",
+            message: "Authentication context missing.",
+          }),
+        );
+      }
+      yield* Effect.logDebug(
+        { userId: contextUser.id, email: contextUser.email },
+        "[changePassword] Handler started with authenticated user from context.",
+      );
+      // ---
+
+      const db = yield* Db;
+
+      const fullUser = yield* Effect.promise(() =>
+        db
+          .selectFrom("user")
+          .selectAll()
+          .where("id", "=", contextUser!.id)
+          .executeTakeFirstOrThrow(),
+      ).pipe(
+        Effect.mapError((cause) => new PasswordHashingError({ cause: cause })),
+      );
+
+      yield* Effect.logDebug(
+        {
+          userId: fullUser.id,
+          retrievedHash: fullUser.password_hash.substring(0, 20) + "...",
+        },
+        "[changePassword] Fetched full user record from DB for verification",
+      );
+
+      const argon2id = new Argon2id();
       const validPassword = yield* Effect.promise(() =>
-        argon2id.verify(user!.password_hash, oldPassword),
+        argon2id.verify(fullUser.password_hash, oldPassword),
       ).pipe(Effect.catchAll(() => Effect.succeed(false)));
 
+      yield* Effect.logDebug(
+        { validPassword },
+        "[changePassword] Password verification result",
+      );
+
       if (!validPassword) {
+        yield* Effect.logWarning(
+          { userId: fullUser.id },
+          "[changePassword] Old password verification FAILED. Aborting.",
+        );
         return yield* Effect.fail(new InvalidCredentialsError());
       }
+
+      yield* Effect.logDebug(
+        { userId: fullUser.id },
+        "[changePassword] Old password verification SUCCEEDED. Proceeding to hash new password.",
+      );
 
       const newPasswordHash = yield* Effect.tryPromise({
         try: () => argon2id.hash(newPassword),
         catch: (cause) => new PasswordHashingError({ cause }),
       });
 
+      yield* Effect.logDebug(
+        {
+          userId: fullUser.id,
+          newHash: newPasswordHash.substring(0, 20) + "...",
+        },
+        "[changePassword] New password hashed. Updating in database.",
+      );
+
       yield* Effect.tryPromise({
         try: () =>
           db
             .updateTable("user")
             .set({ password_hash: newPasswordHash })
-            .where("id", "=", user!.id)
+            .where("id", "=", contextUser!.id)
             .execute(),
         catch: (cause) => new PasswordHashingError({ cause }),
       });
+
+      yield* Effect.logInfo(
+        { userId: fullUser.id },
+        "[changePassword] Password successfully changed in database.",
+      );
     }).pipe(
       Effect.catchTags({
         InvalidCredentialsError: () =>
@@ -374,12 +431,19 @@ export const AuthRpcHandlers = AuthRpc.of({
               message: "Incorrect old password.",
             }),
           ),
-        PasswordHashingError: () =>
-          Effect.fail(
-            new AuthError({
-              _tag: "InternalServerError",
-              message: "Could not update password.",
-            }),
+        PasswordHashingError: (e) =>
+          Effect.logError(
+            "[changePassword] A password hashing or DB error occurred.",
+            e,
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({
+                  _tag: "InternalServerError",
+                  message: "Could not update password.",
+                }),
+              ),
+            ),
           ),
       }),
     ),
