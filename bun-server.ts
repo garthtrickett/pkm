@@ -4,18 +4,17 @@ import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Effect, Layer } from "effect";
 import * as HttpLayerRouter from "@effect/platform/HttpLayerRouter";
-import { Auth } from "./src/lib/server/auth";
+import { httpAuthMiddleware } from "./src/lib/server/auth";
 
 // Service and Config Layers
 import { ObservabilityLive } from "./src/lib/server/observability";
 import { DbLayer } from "./src/db/DbLayer";
-import { httpAuthMiddleware } from "./src/lib/server/auth";
+import { AuthMiddlewareLive } from "./src/lib/server/auth"; // ✅ FIX: Import the middleware implementation
 import { CryptoLive } from "./src/lib/server/crypto";
 import { S3UploaderLive } from "./src/lib/server/s3";
 import { ConfigLive } from "./src/lib/server/Config";
 
 // RPCs, handlers, etc.
-// ✅ FIX: Import the separated RPC definitions and handlers
 import { UnprotectedAuthRpc, ProtectedAuthRpc } from "./src/lib/shared/api";
 import { UserRpcs } from "./src/user";
 import { RpcLog } from "./src/lib/shared/log-schema";
@@ -28,7 +27,6 @@ import { RpcLogHandlers } from "./src/features/log/log.handler";
 import { UserHttpRoutes } from "./src/features/user/user.http";
 
 // --- Handler Layers ---
-// ✅ FIX: Create separate layers for each handler group based on their requirements.
 const UnprotectedHandlersLive = UnprotectedAuthRpc.toLayer(
   UnprotectedAuthRpcHandlers,
 );
@@ -61,7 +59,6 @@ const ApplicationLive = Layer.effectDiscard(
       Effect.provide(RpcSerialization.layerNdjson),
     );
 
-    // ✅ FIX: This app is now "clean" and can be mounted directly.
     const finalUnprotectedApp = unprotectedRpcApp.pipe(
       Effect.provide(DbLayer),
       Effect.provide(CryptoLive),
@@ -74,12 +71,13 @@ const ApplicationLive = Layer.effectDiscard(
     ).pipe(
       Effect.provide(ProtectedHandlersLive),
       Effect.provide(RpcSerialization.layerNdjson),
+      // ✅ FIX: Provide the RPC middleware layer here. This satisfies the `AuthMiddleware` requirement.
+      Effect.provide(AuthMiddlewareLive),
     );
 
-    const authedProtectedApp = protectedRpcApp.pipe(httpAuthMiddleware);
-
-    // ✅ FIX: This app is now "clean" and can be mounted directly.
-    const finalProtectedApp = authedProtectedApp.pipe(
+    // ✅ FIX: The RPC middleware handles auth, so this app is now "clean" and its dependencies
+    // can be provided directly.
+    const finalProtectedApp = protectedRpcApp.pipe(
       Effect.provide(DbLayer),
       Effect.provide(CryptoLive),
     );
@@ -95,7 +93,7 @@ const ApplicationLive = Layer.effectDiscard(
     // --- HTTP Route Mounting ---
     const protectedUserRoutes = HttpRouter.empty.pipe(
       HttpRouter.mountApp("/api/user", UserHttpRoutes),
-      HttpRouter.use(httpAuthMiddleware),
+      HttpRouter.use(httpAuthMiddleware), // Use standard HTTP middleware here
     );
     const finalUserRoutes = protectedUserRoutes.pipe(
       Effect.provide(DbLayer),
@@ -107,11 +105,6 @@ const ApplicationLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(CorsLayer));
 
-const AuthStubLive = Layer.succeed(
-  Auth,
-  Auth.of({ user: null, session: null }),
-);
-
 // --- Top-Level Composition (Provides all singleton dependencies) ---
 const AppMain = HttpRouter.Default.serve().pipe(
   Layer.provide(ApplicationLive),
@@ -122,11 +115,16 @@ const AppMain = HttpRouter.Default.serve().pipe(
   Layer.provide(CryptoLive),
   Layer.provide(S3UploaderLive),
   Layer.provide(ConfigLive),
-  Layer.provide(AuthStubLive),
 );
 
 // This program is now "clean" and has a context of `never`.
-const program = Layer.launch(AppMain);
+const program = Layer.launch(AppMain).pipe(
+  Effect.catchAllCause((cause) =>
+    Effect.logError("Server failed to start", cause).pipe(
+      Effect.andThen(Effect.die(cause)),
+    ),
+  ),
+);
 const runnable = Effect.provide(program, Layer.scope);
 
 // This will now type-check correctly.

@@ -1,5 +1,5 @@
 // src/lib/server/auth.ts
-import { Effect, Metric, Option, Schema } from "effect";
+import { Effect, Layer, Metric, Option, Schema } from "effect";
 import {
   HttpMiddleware,
   HttpServerRequest,
@@ -12,7 +12,11 @@ import { AuthDatabaseError } from "../../features/auth/Errors";
 import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { User, UserId } from "../../types/generated/public/User";
 import { UserSchema } from "../shared/schemas";
-import { Auth, AuthError } from "../shared/auth"; // Shared context
+import {
+  Auth,
+  AuthError,
+  AuthMiddleware as AuthMiddlewareTag,
+} from "../shared/auth"; // Shared context
 import { Db } from "../../db/DbTag";
 import { Crypto } from "./crypto";
 import { sessionValidationSuccessCounter } from "./metrics";
@@ -21,8 +25,7 @@ import { generateId } from "./utils";
 // Re-export for convenience in other server files
 export { Auth, AuthError };
 
-// This is now the ONLY authentication middleware. It will wrap both plain HTTP routes
-// and the entire RPC application.
+// This is still needed for plain HTTP routes that require auth.
 export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -31,19 +34,16 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
     });
 
     if (Option.isNone(sessionIdOption)) {
-      // If no session, immediately fail the request with a 401.
       return yield* Effect.fail(
         HttpServerResponse.json({ error: "Unauthorized" }, { status: 401 }),
       );
     }
 
-    // If a session cookie exists, validate it.
     const validationResult = yield* validateSessionEffect(
       sessionIdOption.value,
-    ).pipe(Effect.provideService(Db, yield* Db));
+    );
 
     if (!validationResult.user || !validationResult.session) {
-      // If validation fails, fail with a 401 and include a header to clear the bad cookie.
       return yield* Effect.fail(
         HttpServerResponse.json(
           { error: "Unauthorized" },
@@ -58,7 +58,6 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
       );
     }
 
-    // If validation succeeds, provide the Auth service to the wrapped application.
     yield* Metric.increment(sessionValidationSuccessCounter);
     const authService = Auth.of({
       user: validationResult.user,
@@ -68,7 +67,61 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   }),
 );
 
-/* ───────────────────────────────── Helper functions ───────────────────────────────── */
+// ✅ FINAL, CORRECT FIX:
+// The service for the AuthMiddlewareTag is a FUNCTION.
+// We use Layer.effect to create this function, allowing us to inject `Db` into its closure.
+export const AuthMiddlewareLive = Layer.effect(
+  AuthMiddlewareTag,
+  Effect.gen(function* () {
+    // This outer Effect runs once to create the middleware function.
+    // We acquire dependencies like `Db` here.
+    const db = yield* Db;
+
+    // This returned function IS the middleware. It matches the RpcMiddleware interface.
+    // It takes an `options` object and returns an Effect with a `never` context.
+    return (options: { readonly headers: Headers }) => {
+      const sessionIdOption = getSessionIdFromRequest({
+        headers: options.headers,
+      });
+
+      if (Option.isNone(sessionIdOption)) {
+        return Effect.fail(
+          new AuthError({
+            _tag: "Unauthorized",
+            message: "No session found",
+          }),
+        );
+      }
+
+      // We use the `db` instance from the closure to provide the dependency
+      // for this specific effect chain, satisfying its context requirement.
+      return validateSessionEffect(sessionIdOption.value).pipe(
+        Effect.provideService(Db, db),
+        Effect.flatMap((validationResult) => {
+          if (!validationResult.user || !validationResult.session) {
+            return Effect.fail(
+              new AuthError({
+                _tag: "Unauthorized",
+                message: "Invalid session",
+              }),
+            );
+          }
+
+          return Metric.increment(sessionValidationSuccessCounter).pipe(
+            Effect.map(() =>
+              Auth.of({
+                user: validationResult.user,
+                session: validationResult.session,
+              }),
+            ),
+          );
+        }),
+      );
+    };
+  }),
+);
+
+/* ───────────────────────────────── Helper functions (unchanged) ───────────────────────────────── */
 export const getSessionIdFromRequest = (req: {
   headers: Headers;
 }): Option.Option<string> => {

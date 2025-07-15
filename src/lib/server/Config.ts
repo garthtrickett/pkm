@@ -1,4 +1,12 @@
-import { Config as EffectConfig, Context, Layer, Option, pipe, Redacted } from "effect";
+// src/lib/server/Config.ts
+import {
+  Config as EffectConfig,
+  Context,
+  Layer,
+  Option,
+  pipe,
+  Redacted,
+} from "effect";
 
 // --- Sub-configs for modularity ---
 
@@ -25,7 +33,7 @@ const NeonConfig = pipe(
     );
 
     return {
-      // ✅ Re-wrap the derived plain string into a Redacted value
+      // Re-wrap the derived plain string into a Redacted value
       connectionString: Redacted.make(finalUrlString),
       useLocalProxy,
     };
@@ -35,14 +43,12 @@ const S3Config = EffectConfig.all({
   bucketName: EffectConfig.string("BUCKET_NAME"),
   publicAvatarUrl: EffectConfig.string("PUBLIC_AVATAR_URL"),
   endpointUrl: EffectConfig.string("AWS_ENDPOINT_URL_S3"),
-  // FIX: Replace deprecated `secret` with `redacted`
   accessKeyId: EffectConfig.redacted("AWS_ACCESS_KEY_ID"),
   secretAccessKey: EffectConfig.redacted("AWS_SECRET_ACCESS_KEY"),
   region: EffectConfig.string("AWS_REGION"),
 });
 
 const LogtailConfig = EffectConfig.all({
-  // FIX: Replace deprecated `secret` with `redacted`
   sourceToken: EffectConfig.redacted("LOGTAIL_SOURCE_TOKEN"),
 });
 
@@ -69,4 +75,7 @@ export class Config extends Context.Tag("app/Config")<
   EffectConfig.Config.Success<typeof AppConfigObject>
 >() {}
 
+// ✅ FINAL, CORRECT FIX:
+// A `Config` object is already an `Effect`, so we can pass it directly to `Layer.effect`.
+// No conversion function is needed.
 export const ConfigLive = Layer.effect(Config, AppConfigObject);

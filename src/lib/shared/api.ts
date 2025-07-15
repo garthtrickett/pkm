@@ -2,7 +2,8 @@
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
-import { AuthError } from "./auth";
+// ✅ ADD: Import the middleware tag
+import { AuthError, AuthMiddleware } from "./auth";
 
 export { AuthError };
 
@@ -12,7 +13,6 @@ export class RequestError extends Schema.Class<RequestError>("RequestError")({
 
 // --- RPC Definitions ---
 
-// ✅ FIX: Export this group directly.
 export const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("login", {
     success: Schema.Struct({
@@ -47,7 +47,7 @@ export const UnprotectedAuthRpc = RpcGroup.make(
   }),
 );
 
-// ✅ FIX: Export this group directly.
+// ✅ FIX: Add the .middleware() annotation
 export const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("me", {
     success: PublicUserSchema,
@@ -65,6 +65,6 @@ export const ProtectedAuthRpc = RpcGroup.make(
       newPassword: Schema.String.pipe(Schema.minLength(8)),
     },
   }),
-);
+).middleware(AuthMiddleware); // <-- This is the key change
 
 export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);
