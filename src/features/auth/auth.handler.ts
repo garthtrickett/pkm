@@ -101,7 +101,7 @@ export const AuthRpcHandlers = AuthRpc.of({
       ).pipe(Effect.provideService(Crypto, crypto));
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
-      const { password_hash, ...publicUser } = newUser;
+      const { password_hash: _, ...publicUser } = newUser;
       return publicUser;
     }).pipe(
       Effect.catchTags({
@@ -176,7 +176,7 @@ export const AuthRpcHandlers = AuthRpc.of({
         Effect.provideService(Crypto, crypto),
       );
 
-      const { password_hash, ...publicUser } = user;
+      const { password_hash: _, ...publicUser } = user;
       return { user: publicUser, sessionId };
     }).pipe(
       Effect.catchTags({
@@ -271,7 +271,7 @@ export const AuthRpcHandlers = AuthRpc.of({
         "Login successful, session created",
       );
 
-      const { password_hash, ...publicUser } = user;
+      const { password_hash: _, ...publicUser } = user;
       return { user: publicUser, sessionId };
     }).pipe(
       Effect.catchTags({
@@ -311,7 +311,7 @@ export const AuthRpcHandlers = AuthRpc.of({
     Effect.gen(function* () {
       const { user } = yield* Auth;
       yield* Effect.logDebug({ userId: user!.id }, `'me' request successful`);
-      const { password_hash, ...publicUser } = user!;
+      const { password_hash: _, ...publicUser } = user!;
       return publicUser;
     }),
 
@@ -358,7 +358,7 @@ export const AuthRpcHandlers = AuthRpc.of({
         db
           .selectFrom("user")
           .selectAll()
-          .where("id", "=", contextUser!.id)
+          .where("id", "=", contextUser.id)
           .executeTakeFirstOrThrow(),
       ).pipe(
         Effect.mapError((cause) => new PasswordHashingError({ cause: cause })),
@@ -413,7 +413,7 @@ export const AuthRpcHandlers = AuthRpc.of({
           db
             .updateTable("user")
             .set({ password_hash: newPasswordHash })
-            .where("id", "=", contextUser!.id)
+            .where("id", "=", contextUser.id)
             .execute(),
         catch: (cause) => new PasswordHashingError({ cause }),
       });

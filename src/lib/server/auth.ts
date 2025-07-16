@@ -1,21 +1,22 @@
 // src/lib/server/auth.ts
-import { Effect, Layer, Option, Schema, Metric } from "effect";
+import { Effect, Layer, Metric, Option, Schema } from "effect";
 import { Db } from "../../db/DbTag";
-import { Crypto } from "./crypto";
-import { generateId } from "./utils";
-import { createDate, TimeSpan } from "oslo";
 import { AuthDatabaseError } from "../../features/auth/Errors";
-import { UserSchema, type User } from "../shared/schemas";
 import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { UserId } from "../../types/generated/public/User";
+import { Auth, AuthError, AuthMiddleware } from "../shared/auth";
+import type { User } from "../shared/schemas";
+import { UserSchema } from "../shared/schemas";
+import { Crypto } from "./crypto";
+import { sessionValidationSuccessCounter } from "./metrics";
+import { generateId } from "./utils";
+import type { Headers } from "@effect/platform/Headers";
 import {
   HttpMiddleware,
   HttpServerRequest,
   HttpServerResponse,
 } from "@effect/platform";
-import type { Headers } from "@effect/platform/Headers";
-import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
-import { sessionValidationSuccessCounter } from "./metrics";
+import { createDate, TimeSpan } from "oslo";
 
 // Re-export for convenience in other server files
 export { Auth, AuthError, AuthMiddleware };
@@ -28,7 +29,7 @@ export const AuthMiddlewareLive = Layer.effect(
     const validate = (sessionId: string) =>
       validateSessionEffect(sessionId).pipe(Effect.provideService(Db, db));
 
-    return ({ headers, clientId, rpc }) => {
+    return ({ clientId, rpc }) => {
       const logic = Effect.gen(function* () {
         const rpcTag = rpc._tag;
         yield* Effect.logDebug(
@@ -36,22 +37,26 @@ export const AuthMiddlewareLive = Layer.effect(
           "AuthMiddleware triggered",
         );
 
-        // --- 🪵 EXHAUSTIVE LOG: Log all incoming headers ---
-        // We use JSON stringify/parse to get a clean, loggable object.
-        const allHeaders = JSON.parse(JSON.stringify(headers));
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const headers = request.headers;
+
+        // ✅ FIX: Use a type assertion to safely handle the 'any' from JSON.parse
+        const allHeaders = JSON.parse(JSON.stringify(headers)) as Record<
+          string,
+          string
+        >;
+
         yield* Effect.logDebug(
           {
             clientId,
             rpc: rpcTag,
             headers: allHeaders,
           },
-          "[AuthMiddleware] Raw incoming headers",
+          "[AuthMiddleware] Raw incoming headers from context",
         );
-        // ---
 
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
-        // --- 🪵 EXHAUSTIVE LOG: Log cookie parsing result ---
         yield* Effect.logDebug(
           {
             clientId,
@@ -62,15 +67,8 @@ export const AuthMiddlewareLive = Layer.effect(
           },
           "[AuthMiddleware] Result of getSessionIdFromRequest",
         );
-        // ---
 
         if (Option.isNone(sessionIdOption)) {
-          // --- 🪵 EXHAUSTIVE LOG: Log failure reason ---
-          yield* Effect.logWarning(
-            { clientId, rpc: rpcTag },
-            "[AuthMiddleware] FAILURE: No session cookie found in headers. Failing request.",
-          );
-          // ---
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -83,16 +81,9 @@ export const AuthMiddlewareLive = Layer.effect(
           { sessionId: sessionIdOption.value },
           "[AuthMiddleware] Session ID found, proceeding to validation.",
         );
-
         const { user, session } = yield* validate(sessionIdOption.value);
 
         if (!user || !session) {
-          // --- 🪵 EXHAUSTIVE LOG: Log validation failure ---
-          yield* Effect.logWarning(
-            { clientId, rpc: rpcTag, sessionId: sessionIdOption.value },
-            "[AuthMiddleware] FAILURE: Session ID was present but failed validation (invalid or expired). Failing request.",
-          );
-          // ---
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -102,7 +93,6 @@ export const AuthMiddlewareLive = Layer.effect(
         }
 
         yield* Metric.increment(sessionValidationSuccessCounter);
-
         yield* Effect.logInfo(
           { clientId, userId: user.id, rpc: rpcTag },
           "[AuthMiddleware] SUCCESS: Session validated successfully. Providing Auth service to handler.",
@@ -110,16 +100,28 @@ export const AuthMiddlewareLive = Layer.effect(
         return { user, session };
       });
 
-      return logic;
+      // This cast is safe because the RpcServer's HTTP adapter runs this middleware
+      // within a context that already provides HttpServerRequest.
+      return logic as Effect.Effect<
+        { user: User; session: Session },
+        AuthError,
+        never
+      >;
     };
   }),
 );
 
-// --- HTTP-SPECIFIC MIDDLEWARE (with added logging for completeness) ---
+// --- HTTP-SPECIFIC MIDDLEWARE ---
 export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const allHeaders = JSON.parse(JSON.stringify(request.headers));
+
+    // ✅ FIX: Use a type assertion to safely handle the 'any' from JSON.parse
+    const allHeaders = JSON.parse(JSON.stringify(request.headers)) as Record<
+      string,
+      string
+    >;
+
     yield* Effect.logDebug(
       { url: request.url, headers: allHeaders },
       "[httpAuthMiddleware] Triggered for HTTP request",
@@ -165,7 +167,6 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
       { userId: validationResult.user.id, url: request.url },
       "[httpAuthMiddleware] SUCCESS: Session validated successfully.",
     );
-
     const authService = Auth.of({
       user: validationResult.user,
       session: validationResult.session,
@@ -174,8 +175,7 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   }),
 );
 
-// ... (rest of the file is unchanged)
-/* ───────────────────────────────── Helper functions ───────────────────────────────── */
+/* ───────────────────────────────── Helper Functions ───────────────────────────────── */
 export const getSessionIdFromRequest = (req: {
   headers: Headers;
 }): Option.Option<string> =>
