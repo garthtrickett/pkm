@@ -1,7 +1,7 @@
 // src/components/pages/profile-page.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream } from "effect";
+import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import {
   authState,
@@ -13,7 +13,7 @@ import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./ProfilePage.module.css";
-import { clientLog } from "../../lib/client/clientLog";
+import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 
 // --- Custom Error Types ---
 class PasswordsDoNotMatchError extends Data.TaggedError(
@@ -83,11 +83,11 @@ export class ProfilePage extends LitElement {
   private _propose = (action: Action) =>
     runClientUnscoped(Queue.offer(this._actionQueue, action));
 
-  private _handleAction = (action: Action) => {
-    // Pure model update
+  private _handleAction = (
+    action: Action,
+  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
     this.model = this._update(this.model, action);
 
-    // Side Effects
     if (action.type === "UPLOAD_START") {
       const formData = new FormData();
       formData.append("avatar", action.payload);
@@ -139,7 +139,6 @@ export class ProfilePage extends LitElement {
         return Effect.void;
       }
 
-      // --- 🪵 DEBUG LOG: Log password lengths before sending ---
       runClientUnscoped(
         clientLog("debug", "[profile-page] Dispatching changePassword RPC", {
           userId: this.model.auth.user?.id,
@@ -154,21 +153,31 @@ export class ProfilePage extends LitElement {
           .changePassword({ oldPassword, newPassword })
           .pipe(
             Effect.tapError((error) =>
-              // --- 🪵 DEBUG LOG: Log the raw error from the server ---
               clientLog(
                 "error",
                 "[profile-page] Received error from changePassword RPC",
                 { error },
               ),
             ),
-            Effect.mapError((error) => {
-              if (error instanceof AuthError) {
-                if (error._tag === "Unauthorized") {
-                  return new IncorrectPasswordError();
-                }
-              }
-              return new UnknownPasswordError({ cause: error });
-            }),
+            Effect.catchAll((error) =>
+              Schema.decodeUnknown(AuthError)(error).pipe(
+                Effect.matchEffect({
+                  onSuccess: (authError) => {
+                    const specificError:
+                      | IncorrectPasswordError
+                      | UnknownPasswordError =
+                      authError._tag === "Unauthorized"
+                        ? new IncorrectPasswordError()
+                        : new UnknownPasswordError({ cause: authError });
+                    return Effect.fail(specificError);
+                  },
+                  onFailure: (parseError) =>
+                    Effect.fail(
+                      new UnknownPasswordError({ cause: parseError }),
+                    ),
+                }),
+              ),
+            ),
           );
       }).pipe(
         Effect.match({
@@ -265,9 +274,6 @@ export class ProfilePage extends LitElement {
     }
   }
 
-  // ✅ THE FIX: Remove `.provide(RpcAuthClientLive)`
-  // This stream will now inherit its context (including the correct HttpClient
-  // needed by RpcAuthClient) from the `runClientUnscoped` function that calls it.
   private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
     Stream.runForEach(this._handleAction),
   );

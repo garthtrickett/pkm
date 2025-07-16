@@ -1,7 +1,7 @@
 // src/components/pages/verify-email-page.ts
 import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, state, property } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream, pipe } from "effect";
+import { Effect, Data, Queue, Fiber, Stream, pipe, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
@@ -81,12 +81,25 @@ export class VerifyEmailPage extends LitElement {
       const verifyEffect = Effect.gen(function* () {
         const rpcClient = yield* RpcAuthClient;
         return yield* rpcClient.verifyEmail({ token }).pipe(
-          Effect.mapError((error) => {
-            if (error instanceof AuthError && error._tag === "BadRequest") {
-              return new InvalidTokenError();
-            }
-            return new UnknownVerificationError({ cause: error });
-          }),
+          Effect.catchAll((error) =>
+            Schema.decodeUnknown(AuthError)(error).pipe(
+              Effect.matchEffect({
+                onSuccess: (authError) => {
+                  const specificError:
+                    | InvalidTokenError
+                    | UnknownVerificationError =
+                    authError._tag === "BadRequest"
+                      ? new InvalidTokenError()
+                      : new UnknownVerificationError({ cause: authError });
+                  return Effect.fail(specificError);
+                },
+                onFailure: (parseError) =>
+                  Effect.fail(
+                    new UnknownVerificationError({ cause: parseError }),
+                  ),
+              }),
+            ),
+          ),
         );
       });
 
@@ -116,8 +129,6 @@ export class VerifyEmailPage extends LitElement {
       document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
       proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
 
-      // ✅ CORRECTED FIX: Use Effect.catchAllCause with Effect.logError,
-      // which has a `never` error channel, to satisfy the function signature.
       return pipe(
         Effect.sleep("2 seconds"),
         Effect.andThen(navigate("/")),

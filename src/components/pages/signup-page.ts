@@ -1,14 +1,15 @@
+// src/components/pages/signup-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream } from "effect";
+import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
-// ✅ FIX 1: Import the shared AuthError, not the non-existent RpcError
 import { AuthError } from "../../lib/shared/auth";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./SignupPage.module.css";
+import { RpcLogClient } from "../../lib/client/clientLog";
 
 // --- Model ---
 interface Model {
@@ -77,7 +78,7 @@ export class SignupPage extends LitElement {
 
   private _handleAction = (
     action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient> => {
+  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
     this.model = update(this.model, action);
 
     if (action.type === "SIGNUP_START") {
@@ -89,32 +90,32 @@ export class SignupPage extends LitElement {
         }
         const rpcClient = yield* RpcAuthClient;
         return yield* rpcClient.signup({ email, password }).pipe(
-          // ✅ FIX 2: Replicate the error mapping from login-page.ts
-          Effect.mapError((error) => {
-            if (error instanceof AuthError) {
-              switch (error._tag) {
-                // This tag comes directly from our backend handler
-                case "EmailAlreadyExistsError":
-                  return new EmailInUseError();
-              }
-            }
-            // Fallback for any other kind of error
-            return new UnknownSignupError({ cause: error });
-          }),
+          Effect.catchAll((error) =>
+            Schema.decodeUnknown(AuthError)(error).pipe(
+              Effect.matchEffect({
+                onSuccess: (authError) => {
+                  const specificError: EmailInUseError | UnknownSignupError =
+                    authError._tag === "EmailAlreadyExistsError"
+                      ? new EmailInUseError()
+                      : new UnknownSignupError({ cause: authError });
+                  return Effect.fail(specificError);
+                },
+                onFailure: (parseError) =>
+                  Effect.fail(new UnknownSignupError({ cause: parseError })),
+              }),
+            ),
+          ),
         );
       });
 
-      // ✅ FIX 3: Add Effect.asVoid to match the function's return signature
       return signupEffect.pipe(
         Effect.matchEffect({
           onSuccess: () => {
-            // Instead of just setting success, navigate to the check-email page
             runClientUnscoped(navigate("/check-email"));
             return this._propose({ type: "SIGNUP_SUCCESS" });
           },
           onFailure: (error) => {
             let message: string;
-            // The error here is one of our custom component errors, so this switch is safe
             switch (error._tag) {
               case "PasswordsDoNotMatchError":
                 message = "Passwords do not match.";
@@ -153,7 +154,6 @@ export class SignupPage extends LitElement {
   }
 
   override render(): TemplateResult {
-    // The success view is now handled by the /check-email page, so we can remove it.
     return html`
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>

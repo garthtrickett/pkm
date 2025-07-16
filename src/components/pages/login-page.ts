@@ -1,16 +1,21 @@
 // src/components/pages/login-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream } from "effect";
+import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
-import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
+import {
+  RpcAuthClient,
+  RpcAuthClientLive,
+  RpcLogClient,
+} from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
+import { clientLog } from "../../lib/client/clientLog";
 
 // --- Model ---
 interface Model {
@@ -74,7 +79,7 @@ export class LoginPage extends LitElement {
 
   private _handleAction = (
     action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient> => {
+  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
     this.model = update(this.model, action);
 
     if (action.type === "LOGIN_START") {
@@ -83,16 +88,48 @@ export class LoginPage extends LitElement {
       const loginEffect = Effect.gen(function* () {
         const rpcClient = yield* RpcAuthClient;
         return yield* rpcClient.login({ email, password }).pipe(
-          Effect.mapError((error) => {
-            if (error instanceof AuthError) {
-              switch (error._tag) {
-                case "Unauthorized":
-                  return new LoginInvalidCredentialsError();
-                case "Forbidden":
-                  return new LoginEmailNotVerifiedError();
-              }
-            }
-            return new UnknownLoginError({ cause: error });
+          Effect.catchAll((error) => {
+            // --- EXHAUSTIVE LOGGING ---
+            const logAndDecode = clientLog(
+              "debug",
+              "[login-page] Raw error received from RPC:",
+              { error },
+            ).pipe(Effect.andThen(Schema.decodeUnknown(AuthError)(error)));
+
+            return logAndDecode.pipe(
+              Effect.matchEffect({
+                onSuccess: (authError) => {
+                  // --- EXHAUSTIVE LOGGING ---
+                  clientLog(
+                    "info",
+                    "[login-page] Successfully decoded AuthError:",
+                    { authError },
+                  );
+
+                  const specificError:
+                    | LoginInvalidCredentialsError
+                    | LoginEmailNotVerifiedError
+                    | UnknownLoginError =
+                    authError._tag === "Unauthorized"
+                      ? new LoginInvalidCredentialsError()
+                      : authError._tag === "Forbidden"
+                        ? new LoginEmailNotVerifiedError()
+                        : new UnknownLoginError({ cause: authError });
+                  return Effect.fail(specificError);
+                },
+                onFailure: (parseError) => {
+                  // --- EXHAUSTIVE LOGGING ---
+                  clientLog(
+                    "error",
+                    "[login-page] Failed to decode error as AuthError:",
+                    { parseError },
+                  );
+                  return Effect.fail(
+                    new UnknownLoginError({ cause: parseError }),
+                  );
+                },
+              }),
+            );
           }),
         );
       });
@@ -102,18 +139,19 @@ export class LoginPage extends LitElement {
           onSuccess: (result) =>
             this._propose({ type: "LOGIN_SUCCESS", payload: result }),
           onFailure: (error) => {
-            let message: string;
-            switch (error._tag) {
-              case "LoginInvalidCredentialsError":
-                message = "Incorrect email or password.";
-                break;
-              case "LoginEmailNotVerifiedError":
-                message = "Please verify your email address before logging in.";
-                break;
-              default:
-                message = "An unknown error occurred. Please try again.";
-                break;
-            }
+            const message =
+              error._tag === "LoginInvalidCredentialsError"
+                ? "Incorrect email or password."
+                : error._tag === "LoginEmailNotVerifiedError"
+                  ? "Please verify your email address before logging in."
+                  : "An unknown error occurred. Please try again.";
+
+            // --- EXHAUSTIVE LOGGING ---
+            clientLog(
+              "info",
+              "[login-page] Mapping domain error to UI message:",
+              { errorTag: error._tag, message },
+            );
             return this._propose({ type: "LOGIN_ERROR", payload: message });
           },
         }),
@@ -134,7 +172,6 @@ export class LoginPage extends LitElement {
     Effect.provide(RpcAuthClientLive),
   );
 
-  // ... rest of the file is unchanged
   override connectedCallback() {
     super.connectedCallback();
     this._mainFiber = runClientUnscoped(this._run);

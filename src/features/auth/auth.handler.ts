@@ -275,23 +275,51 @@ export const AuthRpcHandlers = AuthRpc.of({
       return { user: publicUser, sessionId };
     }).pipe(
       Effect.catchTags({
-        InvalidCredentialsError: () =>
-          Effect.fail(
-            new AuthError({
-              _tag: "Unauthorized",
-              message: "Invalid credentials",
-            }),
-          ),
-        EmailNotVerifiedError: () =>
-          Effect.fail(
-            new AuthError({
-              _tag: "Forbidden",
-              message: "Email not verified",
-            }),
-          ),
+        InvalidCredentialsError: () => {
+          // --- LOGGING ---
+          return Effect.logDebug(
+            "[login.handler] Mapping InvalidCredentialsError to AuthError.",
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({
+                  _tag: "Unauthorized",
+                  message: "Invalid credentials",
+                }),
+              ),
+            ),
+          );
+        },
+        EmailNotVerifiedError: () => {
+          // --- LOGGING ---
+          return Effect.logDebug(
+            "[login.handler] Mapping EmailNotVerifiedError to AuthError.",
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({
+                  _tag: "Forbidden",
+                  message: "Email not verified",
+                }),
+              ),
+            ),
+          );
+        },
       }),
-      Effect.catchAll((error) =>
-        Effect.logError("Unhandled error during login", {
+      // ✅ FIX: This now only catches *truly* unhandled errors.
+      Effect.catchAll((error) => {
+        // If the error is an AuthError, it means it was handled by `catchTags`
+        // and should be passed through to the client.
+        if (error instanceof AuthError) {
+          // --- LOGGING ---
+          return Effect.logDebug(
+            "[login.handler] Passing through intentional AuthError to client.",
+            { error },
+          ).pipe(Effect.andThen(Effect.fail(error)));
+        }
+
+        // Otherwise, it's an unexpected error that needs to be logged and wrapped.
+        return Effect.logError("Unhandled error during login", {
           cause: error,
           email: credentials.email,
         }).pipe(
@@ -303,8 +331,8 @@ export const AuthRpcHandlers = AuthRpc.of({
               }),
             ),
           ),
-        ),
-      ),
+        );
+      }),
     ),
 
   me: () =>
@@ -334,7 +362,6 @@ export const AuthRpcHandlers = AuthRpc.of({
     Effect.gen(function* () {
       const { user: contextUser } = yield* Auth;
 
-      // --- 🪵 EXHAUSTIVE LOG: Confirm handler entry with context ---
       if (!contextUser) {
         yield* Effect.logError(
           "[changePassword] CRITICAL: Handler entered but contextUser is null. This should not happen after AuthMiddleware.",
@@ -350,7 +377,6 @@ export const AuthRpcHandlers = AuthRpc.of({
         { userId: contextUser.id, email: contextUser.email },
         "[changePassword] Handler started with authenticated user from context.",
       );
-      // ---
 
       const db = yield* Db;
 

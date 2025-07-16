@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["../../node_modules/effect/src/PrimaryKey.ts"],
-  "sourcesContent": ["/**\n * @since 2.0.0\n */\n\n/**\n * @since 2.0.0\n * @category symbols\n */\nexport const symbol: unique symbol = Symbol.for(\"effect/PrimaryKey\")\n\n/**\n * @since 2.0.0\n * @category models\n */\nexport interface PrimaryKey {\n  [symbol](): string\n}\n\n/**\n * @since 2.0.0\n * @category accessors\n */\nexport const value = (self: PrimaryKey): string => self[symbol]()\n"],
-  "mappings": ";;;;;AAAA;;;;;AAQO,IAAMA,SAAwBC,OAAOC,IAAI,mBAAmB;AAc5D,IAAMC,QAASC,UAA6BA,KAAKJ,MAAM,EAAC;",
-  "names": ["symbol", "Symbol", "for", "value", "self"]
-}
