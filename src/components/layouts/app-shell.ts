@@ -18,7 +18,6 @@ const processStateChange = (
       authStatus: auth.status,
     });
 
-    // Render a full-page loader while auth state is being determined
     if (auth.status === "initializing" || auth.status === "authenticating") {
       yield* clientLog("debug", "[app-shell] Rendering loading state.");
       const loader = html`<div
@@ -29,7 +28,6 @@ const processStateChange = (
       return yield* Effect.sync(() => render(loader, appRoot));
     }
 
-    // Match the route and apply guards
     const route = yield* matchRoute(path);
 
     if (route.meta.requiresAuth && auth.status === "unauthenticated") {
@@ -43,7 +41,8 @@ const processStateChange = (
     if (auth.status === "authenticated" && route.meta.isPublicOnly) {
       yield* clientLog(
         "warn",
-        "[app-shell] Route is public-only, but user is authenticated. Navigating to /.",
+        `[app-shell] Route is public-only, but user is authenticated.
+Navigating to /.`,
       );
       return yield* navigate("/");
     }
@@ -52,14 +51,18 @@ const processStateChange = (
       pattern: route.pattern.toString(),
     });
 
-    // Get the view from the router. No cleanup management is needed here.
-    const viewResult = route.view(...route.params);
-    const pageTemplate =
-      viewResult instanceof HTMLElement
-        ? html`${viewResult}`
-        : viewResult.template;
+    // ✅ FIX: All routes now return a ViewResult, so we can simplify this.
+    const { template: pageTemplate } = route.view(...route.params);
 
-    // Render the final template
+    // ✅ DEBUG LOG: See what we are about to render.
+    yield* clientLog("error", "[app-shell] ABOUT TO RENDER. View result is:", {
+      isElement: pageTemplate instanceof HTMLElement,
+      tagName:
+        pageTemplate instanceof HTMLElement
+          ? pageTemplate.tagName
+          : "TemplateResult",
+    });
+
     yield* Effect.sync(() =>
       render(
         route.meta.isPublicOnly
@@ -81,7 +84,6 @@ export class AppShell extends HTMLElement {
   private mainFiber?: Fiber.RuntimeFiber<void, unknown>;
 
   protected createRenderRoot() {
-    // Render in the light DOM to use global styles
     return this;
   }
 
@@ -93,7 +95,6 @@ export class AppShell extends HTMLElement {
       ),
     );
     this.mainFiber = runClientUnscoped(Stream.runDrain(mainAppStream));
-
     runClientUnscoped(
       clientLog("info", "<app-shell> connected. Main app stream started."),
     );

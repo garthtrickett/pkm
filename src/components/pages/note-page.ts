@@ -1,7 +1,7 @@
 // src/components/pages/note-page.ts
 import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { repeat } from "lit-html/directives/repeat.js"; // ✅ ADDED: Import the repeat directive
+import { repeat } from "lit-html/directives/repeat.js";
 import { Effect, Schema, Fiber, Duration } from "effect";
 import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
 import {
@@ -23,7 +23,6 @@ type Status = "loading" | "idle" | "saving" | "error";
 
 @customElement("note-page")
 export class NotePage extends LitElement {
-  // ... (properties and other methods remain the same)
   @property({ type: String })
   override id: string = "";
 
@@ -36,66 +35,161 @@ export class NotePage extends LitElement {
   private _unsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, Error> | undefined;
 
-  private readonly _connectedEffect = Effect.gen(
-    function* (this: NotePage) {
-      if (!this.id) {
-        this._status = "error";
-        this._error = "Note ID is missing.";
-        return;
-      }
+  constructor() {
+    super();
+    // Log when the element is first created in memory
+    runClientUnscoped(
+      clientLog(
+        "warn",
+        "-------------- [NotePage] CONSTRUCTOR CALLED --------------",
+      ),
+    );
+  }
 
-      const replicache = yield* ReplicacheService;
-      this._rep = replicache.client;
+  private _initializeState() {
+    // Clean up any previous subscription to prevent memory leaks if the id changes
+    this._unsubscribe?.();
 
-      const noteKey = `note/${this.id}`;
+    runClientUnscoped(
+      clientLog(
+        "warn",
+        `[NotePage] _initializeState called for id: '${this.id}'`,
+      ),
+    );
 
-      this._unsubscribe = this._rep.subscribe(
-        async (tx) => {
-          const note = await tx.get(noteKey);
-          const allBlocks = await tx
-            .scan({ prefix: "block/" })
-            .values()
-            .toArray();
-          return { note, allBlocks };
-        },
-        (result) => {
-          if (!result.note) {
-            this._status = "error";
-            this._error = "Note not found.";
-            return;
-          }
+    const setupEffect = Effect.gen(
+      function* (this: NotePage) {
+        if (!this.id) {
+          this._status = "error";
+          this._error = "Note ID is missing.";
+          yield* clientLog(
+            "error",
+            "[NotePage] Initialization failed: ID is missing.",
+          );
+          return;
+        }
 
-          try {
-            this._note = Schema.decodeUnknownSync(NoteSchema)(result.note);
-            this._blocks = result.allBlocks
-              .flatMap((b) => {
-                try {
-                  return [Schema.decodeUnknownSync(BlockSchema)(b)];
-                } catch {
-                  return [];
-                }
-              })
-              .filter((b) => b.note_id === this.id)
-              .sort((a, b) => a.order - b.order);
+        this._status = "loading";
+        yield* clientLog("info", `[NotePage] Initializing with ID: ${this.id}`);
 
-            this._status = "idle";
-          } catch (e) {
-            this._status = "error";
-            this._error = "Failed to parse note data.";
+        const replicache = yield* ReplicacheService;
+        this._rep = replicache.client;
+
+        const noteKey = `note/${this.id}`;
+
+        yield* clientLog(
+          "debug",
+          `[NotePage] Subscribing to Replicache for key: ${noteKey}`,
+        );
+
+        this._unsubscribe = this._rep.subscribe(
+          async (tx) => {
+            const note = await tx.get(noteKey);
+            const allBlocks = await tx
+              .scan({ prefix: "block/" })
+              .values()
+              .toArray();
+            // Log what the transaction finds directly
             runClientUnscoped(
-              clientLog("error", "[NotePage] Failed to decode note or blocks", {
-                error: e,
+              clientLog("warn", "[NotePage] Replicache query finished.", {
+                hasNote: !!note,
+                blockCount: allBlocks.length,
               }),
             );
-          }
-        },
+            return { note, allBlocks };
+          },
+          (result) => {
+            runClientUnscoped(
+              clientLog(
+                "warn",
+                "[NotePage] Replicache onData callback fired.",
+                { hasNote: !!result.note },
+              ),
+            );
+
+            // ✅ FIX: This guard prevents Replicache from overwriting user input.
+            // If the user is actively typing, the status will be 'saving', and we should
+            // ignore incoming data because it might be stale.
+            if (this._status === "saving") {
+              runClientUnscoped(
+                clientLog(
+                  "warn",
+                  "[NotePage] Ignoring incoming Replicache data while in 'saving' state to prevent overwriting user input.",
+                ),
+              );
+              return;
+            }
+
+            if (!result.note) {
+              this._status = "error";
+              this._error = "Note not found in Replicache cache.";
+              return;
+            }
+            try {
+              this._note = Schema.decodeUnknownSync(NoteSchema)(result.note);
+              this._blocks = result.allBlocks
+                .flatMap((b) => {
+                  try {
+                    return [Schema.decodeUnknownSync(BlockSchema)(b)];
+                  } catch {
+                    return [];
+                  }
+                })
+                .filter((b) => b.note_id === this.id)
+                .sort((a, b) => a.order - b.order);
+
+              this._status = "idle";
+              runClientUnscoped(
+                clientLog(
+                  "warn",
+                  "[NotePage] Successfully decoded note and blocks. Status set to IDLE.",
+                ),
+              );
+            } catch (e) {
+              this._status = "error";
+              this._error = "Failed to parse note data.";
+              runClientUnscoped(
+                clientLog(
+                  "error",
+                  "[NotePage] Failed to decode note or blocks",
+                  { error: e },
+                ),
+              );
+            }
+          },
+        );
+      }.bind(this),
+    );
+
+    void runClientPromise(setupEffect);
+  }
+
+  override updated(changedProperties: Map<string | number | symbol, unknown>) {
+    super.updated(changedProperties);
+    if (changedProperties.has("id")) {
+      runClientUnscoped(
+        clientLog(
+          "warn",
+          `[NotePage] 'updated' lifecycle fired. ID changed from '${changedProperties.get("id")}' to: '${this.id}'`,
+        ),
       );
-    }.bind(this),
-  );
+      if (this.id) {
+        // Only initialize if the new ID is not empty
+        this._initializeState();
+      }
+    }
+  }
 
   override connectedCallback() {
     super.connectedCallback();
-    void runClientPromise(this._connectedEffect);
+    runClientUnscoped(
+      clientLog(
+        "warn",
+        `[NotePage] connectedCallback fired. Current ID: '${this.id}'`,
+      ),
+    );
+    // It's possible the ID is not available yet, but `updated` will catch it if it changes.
+    this._initializeState();
   }
 
   override disconnectedCallback() {
@@ -104,6 +198,12 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
+    runClientUnscoped(
+      clientLog(
+        "warn",
+        `[NotePage] disconnectedCallback fired for ID: ${this.id}`,
+      ),
+    );
   }
 
   private _handleInput(update: Partial<Pick<Note, "title" | "content">>) {
@@ -113,7 +213,6 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
-
     const saveEffect = Effect.gen(
       function* (this: NotePage) {
         yield* Effect.sleep(Duration.millis(500));

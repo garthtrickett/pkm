@@ -18,15 +18,11 @@ export const authStream: Stream.Stream<AuthModel, Error, RpcLogClient> =
     });
   }).pipe(
     Stream.tap((value) =>
-      clientLog(
-        "debug",
-        `[lifecycle] RAW authStream EMIT`,
-        {
-          status: value.status,
-          userId: value.user?.id,
-          source: "authStream:PRE_CHANGES",
-        },
-      ),
+      clientLog("debug", `[lifecycle] RAW authStream EMIT`, {
+        status: value.status,
+        userId: value.user?.id,
+        source: "authStream:PRE_CHANGES",
+      }),
     ),
     // ✅ FIX: Use changesWith for explicit comparison.
     // This will only emit a new value if the status or the user's logged-in state changes.
@@ -47,15 +43,11 @@ export const appStateStream: Stream.Stream<
 ).pipe(
   Stream.map(([path, auth]) => ({ path, auth })),
   Stream.tap((state) =>
-    clientLog(
-      "info",
-      `[lifecycle] New app state emitted (POST-CHANGES)`,
-      {
-        path: state.path,
-        authStatus: state.auth.status,
-        userId: state.auth.user?.id,
-        source: "AppStateStream",
-      },
-    ),
+    clientLog("info", `[lifecycle] New app state emitted (POST-CHANGES)`, {
+      path: state.path,
+      authStatus: state.auth.status,
+      userId: state.auth.user?.id,
+      source: "AppStateStream",
+    }),
   ),
 );
