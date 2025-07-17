@@ -1,5 +1,5 @@
 // src/lib/client/runtime.ts
-import { Cause, Context, Effect, Exit, Layer, Runtime, Scope } from "effect";
+import { Cause, Effect, Exit, Layer, Runtime, Scope } from "effect";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
 import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
@@ -17,46 +17,12 @@ import { ReplicacheLive, ReplicacheService } from "./replicache";
 
 // --- Service Definitions ---
 
-export class ViewManager extends Context.Tag("ViewManager")<
-  ViewManager,
-  {
-    readonly set: (cleanup: (() => void) | undefined) => Effect.Effect<void>;
-    readonly cleanup: () => Effect.Effect<void>;
-  }
->() {}
-
-export const ViewManagerLive = Layer.sync(ViewManager, () => {
-  let currentCleanup: (() => void) | undefined = undefined;
-  return ViewManager.of({
-    set: (cleanup) =>
-      Effect.sync(() => {
-        // We can't use clientLog here as the logger itself is being constructed.
-        // This is a rare case where console.debug is acceptable.
-        console.debug(
-          `ViewManager setting new cleanup function. Old one was ${
-            currentCleanup ? "defined" : "undefined"
-          }.`,
-        );
-        currentCleanup = cleanup;
-      }),
-    cleanup: () => {
-      if (currentCleanup) {
-        console.debug("ViewManager running cleanup function.");
-        currentCleanup();
-        currentCleanup = undefined;
-      }
-      return Effect.void;
-    },
-  });
-});
-
 // --- Final Context and Layer ---
 
 // Define a context with only the services that are always available.
 export type BaseClientContext =
   | LocationService
   | RpcLogClient
-  | ViewManager
   | HttpClient.HttpClient
   | RpcAuthClient
   | RpcReplicacheClient;
@@ -89,7 +55,6 @@ const rpcAndHttpLayer = rpcLayers.pipe(
 // This is the static, base layer for all unauthenticated operations.
 export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
   LocationLive,
-  ViewManagerLive,
   rpcAndHttpLayer,
 );
 

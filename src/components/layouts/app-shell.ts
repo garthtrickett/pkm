@@ -5,11 +5,7 @@ import { appStateStream } from "../../lib/client/lifecycle";
 import { matchRoute, navigate } from "../../lib/client/router";
 import { AppLayout } from "./AppLayout";
 import { clientLog } from "../../lib/client/clientLog";
-import {
-  runClientPromise,
-  runClientUnscoped,
-  ViewManager,
-} from "../../lib/client/runtime";
+import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
 import { type AuthModel } from "../../lib/client/stores/authStore";
 
 const processStateChange = (
@@ -17,13 +13,12 @@ const processStateChange = (
   { path, auth }: { path: string; auth: AuthModel },
 ) =>
   Effect.gen(function* () {
-    const viewManager = yield* ViewManager;
-
     yield* clientLog("info", "[app-shell] processStateChange triggered", {
       path,
       authStatus: auth.status,
     });
 
+    // Render a full-page loader while auth state is being determined
     if (auth.status === "initializing" || auth.status === "authenticating") {
       yield* clientLog("debug", "[app-shell] Rendering loading state.");
       const loader = html`<div
@@ -31,11 +26,10 @@ const processStateChange = (
       >
         <p>Loading...</p>
       </div>`;
-      // FIX: This should not return Effect.never
       return yield* Effect.sync(() => render(loader, appRoot));
     }
 
-    yield* clientLog("debug", "[app-shell] Matching route for path:", path);
+    // Match the route and apply guards
     const route = yield* matchRoute(path);
 
     if (route.meta.requiresAuth && auth.status === "unauthenticated") {
@@ -57,19 +51,16 @@ const processStateChange = (
     yield* clientLog("debug", "[app-shell] Rendering matched route view:", {
       pattern: route.pattern.toString(),
     });
-    yield* viewManager.cleanup();
+
+    // Get the view from the router. No cleanup management is needed here.
     const viewResult = route.view(...route.params);
     const pageTemplate =
       viewResult instanceof HTMLElement
         ? html`${viewResult}`
         : viewResult.template;
-    const pageCleanup =
-      viewResult instanceof HTMLElement ? undefined : viewResult.cleanup;
-    yield* viewManager.set(pageCleanup);
+
+    // Render the final template
     yield* Effect.sync(() =>
-      // ✅ CONDITIONAL LAYOUT:
-      // If the route is public-only (like login/signup), don't wrap it in the main AppLayout.
-      // Otherwise, wrap it to include the header.
       render(
         route.meta.isPublicOnly
           ? pageTemplate
@@ -77,12 +68,20 @@ const processStateChange = (
         appRoot,
       ),
     );
+
+    yield* clientLog(
+      "info",
+      `Successfully rendered view for ${path}`,
+      auth.user?.id,
+      "AppShell:render",
+    );
   });
 
 export class AppShell extends HTMLElement {
   private mainFiber?: Fiber.RuntimeFiber<void, unknown>;
 
   protected createRenderRoot() {
+    // Render in the light DOM to use global styles
     return this;
   }
 
@@ -93,7 +92,6 @@ export class AppShell extends HTMLElement {
         { switch: true },
       ),
     );
-
     this.mainFiber = runClientUnscoped(Stream.runDrain(mainAppStream));
 
     runClientUnscoped(
