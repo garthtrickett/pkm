@@ -47,23 +47,17 @@ export const PokeServiceLive = Layer.scoped(
             );
           }
           return Stream.fromPubSub(userPubSub).pipe(
-            Stream.ensuring(
-              Effect.gen(function* () {
-                const currentPubSub = (yield* Ref.get(userPubSubs)).get(userId);
-                if (
-                  currentPubSub &&
-                  (yield* PubSub.size(currentPubSub)) === 0
-                ) {
-                  yield* Effect.logDebug(
-                    { userId },
-                    "All subscriptions closed for user. Removing PubSub.",
-                  );
-                  yield* Ref.update(userPubSubs, (map) => {
-                    map.delete(userId);
-                    return map;
-                  });
-                }
+            // ✅ THIS IS THE FIX ✅
+            // Use `onError` to log failures without altering the stream type.
+            // This operator is specifically for side-effects on failure.
+            Stream.onError((cause) =>
+              Effect.logError("Error within user subscription stream", {
+                userId,
+                cause,
               }),
+            ),
+            Stream.ensuring(
+              Effect.logInfo({ userId }, "WebSocket stream for user ended."),
             ),
           );
         }),
