@@ -39,6 +39,8 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         const args = yield* _(
           Schema.decodeUnknown(CreateNoteArgsSchema)(mutation.args),
         );
+        // ✅ FIX: The 'note' table has a NOT NULL 'content' column.
+        // We must provide a default value for it on creation.
         const newNote: NewNote = {
           id: args.id,
           title: args.title,
