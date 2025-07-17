@@ -10,7 +10,11 @@ import "../../components/pages/signup-page";
 import "../../components/pages/check-email-page";
 import "../../components/pages/verify-email-page";
 import type { VerifyEmailPage } from "../../components/pages/verify-email-page";
-import "../../components/pages/profile-page"; // ✅ ADDED
+import "../../components/pages/profile-page";
+// ✅ ADDED
+import "../../components/pages/forgot-password-page";
+import "../../components/pages/reset-password-page";
+import type { ResetPasswordPage } from "../../components/pages/reset-password-page";
 
 // ... (NotesView, UnauthorizedView, NotFoundView placeholders are unchanged)
 const NotesView = (): ViewResult => ({ template: html`<div>Notes Page</div>` });
@@ -62,11 +66,27 @@ const routes: Route[] = [
     },
     meta: { isPublicOnly: true },
   },
-  // ✅ ADDED: Route for the new profile page
   {
     pattern: /^\/profile$/,
     view: () => document.createElement("profile-page"),
     meta: { requiresAuth: true },
+  },
+  // ✅ ADDED: New routes for password reset flow
+  {
+    pattern: /^\/forgot-password$/,
+    view: () => document.createElement("forgot-password-page"),
+    meta: { isPublicOnly: true },
+  },
+  {
+    pattern: /^\/reset-password\/([^/]+)$/,
+    view: (token: string) => {
+      const el = document.createElement(
+        "reset-password-page",
+      ) as ResetPasswordPage;
+      el.token = token;
+      return el;
+    },
+    meta: { isPublicOnly: true },
   },
   { pattern: /^\/unauthorized$/, view: UnauthorizedView, meta: {} },
 ];

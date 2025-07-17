@@ -3,7 +3,6 @@ import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
 import { AuthMiddleware, AuthError } from "./auth";
-
 export { AuthError };
 
 export class RequestError extends Schema.Class<RequestError>("RequestError")({
@@ -43,6 +42,25 @@ const UnprotectedAuthRpc = RpcGroup.make(
     error: AuthError,
     payload: {
       token: Schema.String,
+    },
+  }),
+
+  // ✅ ADDED: Endpoint to request a password reset email
+  Rpc.make("requestPasswordReset", {
+    success: Schema.Void,
+    error: AuthError, // Generic error for unknown failures
+    payload: {
+      email: Schema.String,
+    },
+  }),
+
+  // ✅ ADDED: Endpoint to reset the password with a token
+  Rpc.make("resetPassword", {
+    success: Schema.Void,
+    error: AuthError,
+    payload: {
+      token: Schema.String,
+      newPassword: Schema.String.pipe(Schema.minLength(8)),
     },
   }),
 );

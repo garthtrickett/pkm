@@ -22,12 +22,20 @@ import { generateId } from "../../lib/server/utils";
 import { Crypto } from "../../lib/server/crypto";
 import { createDate, TimeSpan, isWithinExpirationDate } from "oslo";
 import type { EmailVerificationTokenId } from "../../types/generated/public/EmailVerificationToken";
+import type { PasswordResetTokenId } from "../../types/generated/public/PasswordResetToken";
 
 // A placeholder for a future email service.
 const sendVerificationEmail = (email: string, token: string) =>
   Effect.logInfo(
     { email, verificationLink: `http://localhost:5173/verify-email/${token}` },
     "TODO: Implement email sending. Sending verification email.",
+  );
+
+// ✅ ADDED: Placeholder for sending the password reset email
+const sendPasswordResetEmail = (email: string, token: string) =>
+  Effect.logInfo(
+    { email, resetLink: `https://localhost:5173/reset-password/${token}` },
+    "TODO: Implement email sending. Sending password reset email.",
   );
 
 const createVerificationToken = (
@@ -51,6 +59,36 @@ const createVerificationToken = (
       catch: (cause) => new TokenCreationError({ cause }),
     });
     return verificationToken;
+  });
+
+// ✅ ADDED: Helper to create a password reset token
+const createPasswordResetToken = (
+  userId: UserId,
+): Effect.Effect<string, TokenCreationError, Db | Crypto> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    // Invalidate all existing tokens for this user
+    yield* Effect.promise(() =>
+      db
+        .deleteFrom("password_reset_token")
+        .where("user_id", "=", userId)
+        .execute(),
+    );
+
+    const tokenId = yield* generateId(40);
+    yield* Effect.tryPromise({
+      try: () =>
+        db
+          .insertInto("password_reset_token")
+          .values({
+            id: tokenId as PasswordResetTokenId,
+            user_id: userId,
+            expires_at: createDate(new TimeSpan(2, "h")),
+          })
+          .execute(),
+      catch: (cause) => new TokenCreationError({ cause }),
+    });
+    return tokenId;
   });
 
 export const AuthRpcHandlers = AuthRpc.of({
@@ -99,6 +137,7 @@ export const AuthRpcHandlers = AuthRpc.of({
         newUser.id,
         newUser.email,
       ).pipe(Effect.provideService(Crypto, crypto));
+
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
       const { password_hash: _, ...publicUser } = newUser;
@@ -175,7 +214,6 @@ export const AuthRpcHandlers = AuthRpc.of({
       const sessionId = yield* createSessionEffect(user.id).pipe(
         Effect.provideService(Crypto, crypto),
       );
-
       const { password_hash: _, ...publicUser } = user;
       return { user: publicUser, sessionId };
     }).pipe(
@@ -204,6 +242,135 @@ export const AuthRpcHandlers = AuthRpc.of({
         ),
       ),
     ),
+
+  // ✅ ADDED: Handler implementation
+  requestPasswordReset: ({ email }) =>
+    Effect.gen(function* () {
+      const db = yield* Db;
+      const crypto = yield* Crypto;
+
+      const user = yield* Effect.promise(() =>
+        db
+          .selectFrom("user")
+          .selectAll()
+          .where("email", "=", email)
+          .executeTakeFirst(),
+      );
+
+      // To prevent email enumeration, we don't fail here.
+      // We only proceed if the user exists and their email is verified.
+      if (user && user.email_verified) {
+        yield* Effect.logInfo(
+          { userId: user.id },
+          "Valid user found for password reset request. Creating token.",
+        );
+        const token = yield* createPasswordResetToken(user.id).pipe(
+          Effect.provideService(Crypto, crypto),
+        );
+        yield* sendPasswordResetEmail(user.email, token);
+      } else {
+        yield* Effect.logWarning(
+          { email },
+          "Password reset requested for non-existent or unverified email. Silently ignoring.",
+        );
+      }
+      // Always return success to the client.
+      return;
+    }).pipe(
+      Effect.catchAll((error) => {
+        // This will only catch unexpected errors (e.g., DB connection)
+        return Effect.logError(
+          "Unhandled error during password reset request",
+          error,
+        ).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new AuthError({
+                _tag: "InternalServerError",
+                message: "An internal error occurred.",
+              }),
+            ),
+          ),
+        );
+      }),
+    ),
+
+  // ✅ ADDED: Handler implementation
+  resetPassword: ({ token, newPassword }) =>
+    Effect.gen(function* () {
+      const db = yield* Db;
+      yield* Effect.logInfo(
+        { tokenPrefix: token.substring(0, 8) },
+        "Password reset attempt",
+      );
+      // Retrieve and delete the token in one transaction-like step
+      const storedToken = yield* Effect.promise(() =>
+        db
+          .deleteFrom("password_reset_token")
+          .where("id", "=", token as PasswordResetTokenId)
+          .returningAll()
+          .executeTakeFirst(),
+      );
+
+      if (!storedToken || !isWithinExpirationDate(storedToken.expires_at)) {
+        yield* Effect.logWarning(
+          "Invalid or expired password reset token used.",
+        );
+        return yield* Effect.fail(
+          new TokenInvalidError({ cause: "Token not found or expired" }),
+        );
+      }
+
+      const argon2id = new Argon2id();
+      const newPasswordHash = yield* Effect.tryPromise({
+        try: () => argon2id.hash(newPassword),
+        catch: (cause) => new PasswordHashingError({ cause }),
+      });
+
+      // Update the user's password
+      yield* Effect.promise(() =>
+        db
+          .updateTable("user")
+          .set({ password_hash: newPasswordHash })
+          .where("id", "=", storedToken.user_id)
+          .execute(),
+      );
+
+      // For security, log the user out of all other sessions
+      yield* Effect.promise(() =>
+        db
+          .deleteFrom("session")
+          .where("user_id", "=", storedToken.user_id)
+          .execute(),
+      );
+
+      yield* Effect.logInfo(
+        { userId: storedToken.user_id },
+        "Password successfully reset.",
+      );
+    }).pipe(
+      Effect.catchTags({
+        TokenInvalidError: () =>
+          Effect.fail(
+            new AuthError({
+              _tag: "BadRequest",
+              message: "Invalid or expired password reset token.",
+            }),
+          ),
+        PasswordHashingError: (e) =>
+          Effect.logError("Password hashing failed during reset", e).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({
+                  _tag: "InternalServerError",
+                  message: "Could not reset password.",
+                }),
+              ),
+            ),
+          ),
+      }),
+    ),
+
   login: (credentials) =>
     Effect.gen(function* () {
       yield* Effect.logInfo(
@@ -256,6 +423,7 @@ export const AuthRpcHandlers = AuthRpc.of({
         { isVerified: user.email_verified },
         "Email verification check",
       );
+
       if (!user.email_verified) {
         yield* Effect.logWarning(
           { email: user.email },
