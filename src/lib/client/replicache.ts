@@ -4,10 +4,11 @@ import {
   type ReadonlyJSONValue,
   type WriteTransaction,
 } from "replicache";
-import { Context, Layer } from "effect";
+import { Context, Layer, Effect } from "effect"; // ✅ ADDED: Import Effect
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { Schema } from "effect";
 import { NoteSchema } from "../shared/schemas";
+import { setupWebSocket } from "./replicache/websocket"; // ✅ ADDED
 
 // --- Type definitions for our mutators ---
 interface CreateNoteArgs {
@@ -16,7 +17,6 @@ interface CreateNoteArgs {
   title: string;
 }
 
-// ✅ FIX: Update the interface to include an optional title
 interface UpdateNoteArgs {
   id: NoteId;
   title: string;
@@ -51,7 +51,6 @@ const mutators = {
     return jsonCompatibleNote;
   },
 
-  // ✅ FIX: Update the mutator to handle title and content updates
   updateNote: async (tx: WriteTransaction, args: UpdateNoteArgs) => {
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
@@ -98,13 +97,22 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
 >() {}
 
 export const ReplicacheLive = (user: PublicUser) =>
-  Layer.sync(ReplicacheService, () => {
-    const client = new Replicache({
-      licenseKey: "l2c75a896d85a4914a51e54a32338b556",
-      name: user.id,
-      pushURL: "/api/rpc/replicachePush",
-      pullURL: "/api/rpc/replicachePull",
-      mutators,
-    });
-    return { client };
-  });
+  Layer.effect(
+    // 🔄 MODIFIED: Use Layer.effect to allow for setup logic
+    ReplicacheService,
+    Effect.gen(function* () {
+      const client = new Replicache({
+        // Use your actual license key
+        licenseKey: "l2c75a896d85a4914a51e54a32338b556",
+        name: user.id,
+        pushURL: "/api/rpc/replicachePush",
+        pullURL: "/api/rpc/replicachePull",
+        mutators,
+      });
+
+      // ✅ ADDED: Setup WebSocket connection and fork it into the background
+      yield* Effect.forkDaemon(setupWebSocket(client));
+
+      return { client };
+    }),
+  );

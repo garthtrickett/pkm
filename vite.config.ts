@@ -4,17 +4,19 @@ import tailwindcss from "@tailwindcss/vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 
 export default defineConfig({
-  // // This block is correctly configured
-  // css: {
-  //   postcss: "./postcss.config.js",
-  // },
   plugins: [tailwindcss(), basicSsl({})],
 
-  // Your existing server proxy config
   server: {
     proxy: {
+      // Existing API proxy
       "/api": {
         target: "http://localhost:42069",
+        changeOrigin: true,
+      },
+      // Add this new rule for WebSockets
+      "/ws": {
+        target: "ws://localhost:42069", // Use the WebSocket protocol
+        ws: true, // This is the crucial option to enable WebSocket proxying
         changeOrigin: true,
       },
     },

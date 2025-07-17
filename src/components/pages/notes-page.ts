@@ -15,20 +15,16 @@ import styles from "./NotesView.module.css";
 import { NoteSchema, type Note, type NoteId } from "../../lib/shared/schemas";
 import { clientLog } from "../../lib/client/clientLog";
 import { Replicache } from "replicache";
-import { v4 as uuidv4 } from "uuid"; // Import uuid
+import { v4 as uuidv4 } from "uuid";
 
 @customElement("notes-page")
 export class NotesPage extends LitElement {
-  // ... (state and properties are the same)
-  @state()
-  private _notes: Note[] = [];
-  @state()
-  private _isCreating = false;
+  @state() private _notes: Note[] = [];
+  @state() private _isCreating = false;
 
   private _rep: Replicache<ReplicacheMutators> | undefined;
   private _unsubscribe: (() => void) | undefined;
 
-  // ... (the _connectedEffect is correct and remains the same)
   private readonly _connectedEffect = Effect.gen(
     function* (this: NotesPage) {
       yield* clientLog(
@@ -48,11 +44,9 @@ export class NotesPage extends LitElement {
               return [Schema.decodeUnknownSync(NoteSchema)(json)];
             } catch (e) {
               runClientUnscoped(
-                clientLog(
-                  "warn",
-                  "[NotesPage] Failed to decode note from Replicache, filtering out.",
-                  { error: e },
-                ),
+                clientLog("warn", "[NotesPage] Failed to decode note.", {
+                  error: e,
+                }),
               );
               return [];
             }
@@ -65,17 +59,11 @@ export class NotesPage extends LitElement {
               new Date(b.updated_at).getTime() -
               new Date(a.updated_at).getTime(),
           );
-          runClientUnscoped(
-            clientLog("debug", "[NotesPage] Notes state updated.", {
-              noteCount: this._notes.length,
-            }),
-          );
         },
       );
     }.bind(this),
   );
 
-  // ... (connectedCallback and disconnectedCallback are the same)
   override connectedCallback() {
     super.connectedCallback();
     if (authState.value.status === "authenticated") {
@@ -86,40 +74,39 @@ export class NotesPage extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
-    runClientUnscoped(
-      clientLog(
-        "info",
-        "[NotesPage] Component disconnected, unsubscribed from Replicache.",
-      ),
+    runClientUnscoped(clientLog("info", "[NotesPage] Component disconnected."));
+  }
+
+  // ✅ ADDED: Delete note handler
+  private _deleteNote(noteId: NoteId) {
+    const deleteEffect = Effect.gen(
+      function* (this: NotesPage) {
+        if (!this._rep) {
+          return yield* Effect.logError("Replicache not available for delete.");
+        }
+        yield* Effect.promise(() =>
+          this._rep!.mutate.deleteNote({ id: noteId }),
+        );
+      }.bind(this),
     );
+
+    void runClientPromise(deleteEffect);
   }
 
   private _createNewNote() {
     this._isCreating = true;
-
-    // ✅ FIX 1: Bind `this` to the generator function.
     const createEffect = Effect.gen(
       function* (this: NotesPage) {
         if (!this._rep) {
           return yield* Effect.logError(
-            "[NotesPage] Replicache client not available for mutation.",
+            "Replicache not available for mutation.",
           );
         }
-
         const user = authState.value.user;
         if (!user) {
-          return yield* Effect.logError(
-            "[NotesPage] Cannot create note without authenticated user.",
-          );
+          return yield* Effect.logError("Cannot create note without user.");
         }
-
         const newNoteId = uuidv4() as NoteId;
-
-        yield* clientLog("info", "[NotesPage] Creating new note...", {
-          userId: user.id,
-          newNoteId: newNoteId,
-        });
-
         const newNoteJSON = yield* Effect.promise(() =>
           this._rep!.mutate.createNote({
             id: newNoteId,
@@ -127,24 +114,17 @@ export class NotesPage extends LitElement {
             title: "Untitled Note",
           }),
         );
-
         const newNote = yield* Schema.decodeUnknown(NoteSchema)(newNoteJSON);
-
         this._isCreating = false;
-
         return yield* navigate(`/notes/${newNote.id}`);
       }.bind(this),
-    ); // <-- Bind `this` here
-
-    // ✅ FIX 2: Pipe the error handling to the created effect.
+    );
     const finalEffect = createEffect.pipe(
       Effect.catchAll((err) => {
         this._isCreating = false;
         return clientLog("error", "[NotesPage] Failed to create note", err);
       }),
     );
-
-    // Run the final, composed effect.
     void runClientPromise(finalEffect);
   }
 
@@ -172,22 +152,47 @@ export class NotesPage extends LitElement {
                 this._notes,
                 (note) => note.id,
                 (note) => html`
-                  <a
-                    href="/notes/${note.id}"
-                    class=${styles.noteItem}
-                    @click=${(e: Event) => {
-                      e.preventDefault();
-                      runClientUnscoped(navigate(`/notes/${note.id}`));
-                    }}
-                  >
-                    <h3 class=${styles.noteItemH3}>${note.title}</h3>
-                    <p class=${styles.noteItemP}>
-                      ${note.content
-                        ? note.content.substring(0, 100) +
-                          (note.content.length > 100 ? "..." : "")
-                        : "No additional content"}
-                    </p>
-                  </a>
+                  <div class="group relative">
+                    <a
+                      href="/notes/${note.id}"
+                      class=${styles.noteItem}
+                      @click=${(e: Event) => {
+                        e.preventDefault();
+                        runClientUnscoped(navigate(`/notes/${note.id}`));
+                      }}
+                    >
+                      <h3 class=${styles.noteItemH3}>${note.title}</h3>
+                      <p class=${styles.noteItemP}>
+                        ${note.content
+                          ? note.content.substring(0, 100) +
+                            (note.content.length > 100 ? "..." : "")
+                          : "No additional content"}
+                      </p>
+                    </a>
+                    <!-- ✅ ADDED: Delete button -->
+                    <button
+                      @click=${() => this._deleteNote(note.id)}
+                      class="absolute top-3 right-3 z-10 hidden rounded-full bg-white p-1.5 text-zinc-500 shadow-sm transition-all group-hover:block hover:bg-red-50 hover:text-red-600"
+                      aria-label="Delete note"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M3 6h18" />
+                        <path
+                          d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                        />
+                      </svg>
+                    </button>
+                  </div>
                 `,
               )
             : html`

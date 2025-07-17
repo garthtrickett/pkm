@@ -4,26 +4,31 @@ import type { PushRequest } from "../../lib/shared/replicache-schemas";
 import { sql } from "kysely";
 import { Db } from "../../db/DbTag";
 import { Auth } from "../../lib/server/auth";
-import { NoteIdSchema } from "../../lib/shared/schemas";
+import { NoteIdSchema, UserIdSchema } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import type { ReplicacheClientId } from "../../types/generated/public/ReplicacheClient";
-import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
 import { Database } from "../../types";
 import { Kysely } from "kysely";
+import { PokeService } from "../../lib/server/PokeService";
 
-// --- Mutation-specific argument schemas for validation ---
+// --- Mutation Schemas ---
 const CreateNoteArgsSchema = Schema.Struct({
+  id: NoteIdSchema,
+  userID: UserIdSchema, // Matches the client mutator
+  title: Schema.String,
+});
+
+const UpdateNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
   title: Schema.String,
   content: Schema.String,
 });
 
-const UpdateNoteContentArgsSchema = Schema.Struct({
+const DeleteNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
-  content: Schema.String,
 });
 
-// A helper function to apply a single mutation within a transaction.
+// --- Mutation Logic ---
 const applyMutation = (mutation: PushRequest["mutations"][number]) =>
   Effect.gen(function* (_) {
     const db = yield* _(Db);
@@ -37,8 +42,8 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         const newNote: NewNote = {
           id: args.id,
           title: args.title,
-          content: args.content,
-          user_id: user!.id, // `user` is guaranteed by Auth middleware
+          content: "", // Start with empty content
+          user_id: user!.id,
           version: 1,
         };
         yield* _(
@@ -46,27 +51,42 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         );
         break;
       }
-
-      case "updateNoteContent": {
+      case "updateNote": {
         const args = yield* _(
-          Schema.decodeUnknown(UpdateNoteContentArgsSchema)(mutation.args),
+          Schema.decodeUnknown(UpdateNoteArgsSchema)(mutation.args),
         );
         yield* _(
           Effect.promise(() =>
             db
               .updateTable("note")
               .set({
+                title: args.title,
                 content: args.content,
                 version: sql`version + 1`,
+                updated_at: new Date(),
               })
               .where("id", "=", args.id)
-              .where("user_id", "=", user!.id) // Security check
+              .where("user_id", "=", user!.id)
               .execute(),
           ),
         );
         break;
       }
-
+      case "deleteNote": {
+        const args = yield* _(
+          Schema.decodeUnknown(DeleteNoteArgsSchema)(mutation.args),
+        );
+        yield* _(
+          Effect.promise(() =>
+            db
+              .deleteFrom("note")
+              .where("id", "=", args.id)
+              .where("user_id", "=", user!.id)
+              .execute(),
+          ),
+        );
+        break;
+      }
       default:
         yield* _(
           Effect.logWarning(`Unknown mutation received: ${mutation.name}`),
@@ -74,13 +94,17 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
     }
   });
 
+// 🔄 MODIFIED: Correctly handle transaction errors and trigger poke
 export const handlePush = (
   req: PushRequest,
-): Effect.Effect<void, never, Db | Auth> =>
+): Effect.Effect<void, never, Db | Auth | PokeService> =>
   Effect.gen(function* (_) {
     const { clientGroupID, mutations } = req;
+    if (mutations.length === 0) return;
+
     const db = yield* _(Db);
     const { user } = yield* _(Auth);
+    const pokeService = yield* _(PokeService);
 
     yield* _(
       Effect.logInfo(
@@ -89,88 +113,58 @@ export const handlePush = (
       ),
     );
 
-    yield* _(
-      Effect.promise(() =>
-        db.transaction().execute(async (trx) => {
-          for (const mutation of mutations) {
-            // ✅ **FIX: Use a type assertion to inform TypeScript of the object's shape.**
-            // This satisfies the `no-unsafe-assignment` linting rule for `args`.
-            const {
-              id: mutationID,
-              name,
-              args,
-            } = mutation as {
-              id: number;
-              name: string;
-              args: unknown;
-            };
+    const transactionEffect = Effect.promise(() =>
+      db.transaction().execute(async (trx) => {
+        const clientID = `${clientGroupID}-${user!.id}`;
+        const clientState = await trx
+          .selectFrom("replicache_client")
+          .selectAll()
+          .where("id", "=", clientID as ReplicacheClientId)
+          .forUpdate()
+          .executeTakeFirst();
 
-            const clientState = await trx
-              .selectFrom("replicache_client")
-              .selectAll()
-              .where(
-                "id",
-                "=",
-                `${clientGroupID}-${user!.id}` as ReplicacheClientId,
-              )
-              .forUpdate()
-              .executeTakeFirst();
+        if (!clientState) {
+          throw new Error(`Client state not found for id: ${clientID}`);
+        }
 
-            if (!clientState) {
-              throw new Error(
-                `Client state not found for id: ${clientGroupID}`,
-              );
-            }
-
-            const expectedMutationID = clientState.last_mutation_id + 1;
-
-            if (mutationID < expectedMutationID) {
-              await Effect.runPromise(
-                Effect.logInfo(
-                  { clientGroupID, mutationID, expectedMutationID },
-                  "Skipping already processed mutation",
-                ),
-              );
-              continue;
-            }
-
-            if (mutationID > expectedMutationID) {
-              throw new Error(
-                `Mutation ${mutationID} is out of order; expected ${expectedMutationID}`,
-              );
-            }
-
-            const mutationEffect = applyMutation(mutation);
-            await Effect.runPromise(
-              mutationEffect.pipe(
-                Effect.provideService(Db, trx as Kysely<Database>),
-                Effect.provideService(Auth, { user: user!, session: null }),
-              ),
-            );
-
-            await trx
-              .insertInto("change_log")
-              .values({
-                client_group_id: clientGroupID as ReplicacheClientGroupId,
-                client_id: `${clientGroupID}-${user!.id}` as ReplicacheClientId,
-                mutation_id: mutationID,
-                name,
-                args,
-              })
-              .execute();
-
-            await trx
-              .updateTable("replicache_client")
-              .set({ last_mutation_id: mutationID })
-              .where("id", "=", clientState.id)
-              .execute();
+        for (const mutation of mutations) {
+          const expectedMutationID = clientState.last_mutation_id + 1;
+          if (mutation.id < expectedMutationID) {
+            continue;
           }
-        }),
-      ),
-      Effect.catchAll((error) =>
-        Effect.logError("Transaction failed during push", { error }),
-      ),
+          if (mutation.id > expectedMutationID) {
+            throw new Error(
+              `Mutation ${mutation.id} out of order; expected ${expectedMutationID}`,
+            );
+          }
+          const mutationEffect = applyMutation(mutation);
+          await Effect.runPromise(
+            mutationEffect.pipe(
+              Effect.provideService(Db, trx as Kysely<Database>),
+              Effect.provideService(Auth, { user: user!, session: null }),
+            ),
+          );
+          clientState.last_mutation_id = mutation.id;
+        }
+        await trx
+          .updateTable("replicache_client")
+          .set({ last_mutation_id: clientState.last_mutation_id })
+          .where("id", "=", clientID as ReplicacheClientId)
+          .execute();
+      }),
     );
 
-    return; // Return void on success
+    // This is the fix. We match on the outcome of the transaction effect.
+    yield* transactionEffect.pipe(
+      Effect.matchEffect({
+        onSuccess: () => {
+          // If the transaction succeeded, poke other clients.
+          return pokeService.poke(user!.id);
+        },
+        onFailure: (error) => {
+          // If it failed, log the error.
+          return Effect.logError("Transaction failed during push", { error });
+        },
+      }),
+    );
   });

@@ -170,7 +170,10 @@ export class NotePage extends LitElement {
       runClientUnscoped(
         clientLog(
           "warn",
-          `[NotePage] 'updated' lifecycle fired. ID changed from '${changedProperties.get("id")}' to: '${this.id}'`,
+          // ✅ FIX: Explicitly cast the 'unknown' value to a string.
+          `[NotePage] 'updated' lifecycle fired. ID changed from '${String(
+            changedProperties.get("id"),
+          )}' to: '${this.id}'`,
         ),
       );
       if (this.id) {
