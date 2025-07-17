@@ -1,11 +1,19 @@
 // src/lib/client/runtime.ts
-
 import { Cause, Context, Effect, Exit, Layer, Runtime, Scope } from "effect";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
 import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
 import { LocationLive, type LocationService } from "./LocationService";
-import { RpcAuthClient, RpcLogClient } from "./rpc";
+import {
+  RpcAuthClient,
+  RpcAuthClientLive,
+  RpcLogClientLive,
+  RpcLogClient,
+  RpcReplicacheClient,
+  RpcReplicacheClientLive,
+} from "./rpc";
+import { authState } from "./stores/authStore";
+import { ReplicacheLive, ReplicacheService } from "./replicache";
 
 // --- Service Definitions ---
 
@@ -22,8 +30,9 @@ export const ViewManagerLive = Layer.sync(ViewManager, () => {
   return ViewManager.of({
     set: (cleanup) =>
       Effect.sync(() => {
-        clientLog(
-          "debug",
+        // We can't use clientLog here as the logger itself is being constructed.
+        // This is a rare case where console.debug is acceptable.
+        console.debug(
           `ViewManager setting new cleanup function. Old one was ${
             currentCleanup ? "defined" : "undefined"
           }.`,
@@ -32,7 +41,7 @@ export const ViewManagerLive = Layer.sync(ViewManager, () => {
       }),
     cleanup: () => {
       if (currentCleanup) {
-        clientLog("debug", "ViewManager running cleanup function.");
+        console.debug("ViewManager running cleanup function.");
         currentCleanup();
         currentCleanup = undefined;
       }
@@ -40,77 +49,91 @@ export const ViewManagerLive = Layer.sync(ViewManager, () => {
     },
   });
 });
+
 // --- Final Context and Layer ---
 
-export type ClientContext =
+// Define a context with only the services that are always available.
+export type BaseClientContext =
   | LocationService
   | RpcLogClient
   | ViewManager
   | HttpClient.HttpClient
-  | RpcAuthClient;
+  | RpcAuthClient
+  | RpcReplicacheClient;
 
-// --- 🪵 EXHAUSTIVE LOG ---
+// Define a full context that includes the authentication-dependent ReplicacheService.
+export type FullClientContext = BaseClientContext | ReplicacheService;
+
+// --- Layer Setup ---
+
 const RequestInitLive = Layer.succeed(FetchRequestInit, {
   credentials: "include",
-}).pipe(
-  Layer.tap(() =>
-    Effect.logDebug(
-      "[runtime] RequestInitLive created with credentials: 'include'",
-    ),
-  ),
-);
+});
 
-// --- 🪵 EXHAUSTIVE LOG ---
 const CustomHttpClientLive = FetchHttpClient.layer.pipe(
   Layer.provide(RequestInitLive),
-  Layer.tap(() => Effect.logDebug("[runtime] CustomHttpClientLive created")),
 );
 
-const rpcLayers = Layer.merge(RpcAuthClient.Default, RpcLogClient.Default);
+// Merge all RPC client layers.
+const rpcLayers = Layer.mergeAll(
+  RpcAuthClientLive,
+  RpcLogClientLive,
+  RpcReplicacheClientLive,
+);
 
-// --- 🪵 EXHAUSTIVE LOG ---
+// Provide the HttpClient to the RPC layers.
 const rpcAndHttpLayer = rpcLayers.pipe(
   Layer.provideMerge(CustomHttpClientLive),
-  Layer.tap(() =>
-    Effect.logDebug(
-      "[runtime] rpcAndHttpLayer created by providing HttpClient to rpcLayers",
-    ),
-  ),
 );
 
-export const ClientLive: Layer.Layer<ClientContext, never, never> =
-  Layer.mergeAll(LocationLive, ViewManagerLive, rpcAndHttpLayer);
+// This is the static, base layer for all unauthenticated operations.
+export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
+  LocationLive,
+  ViewManagerLive,
+  rpcAndHttpLayer,
+);
 
 // --- Runtime Setup ---
 
 const appScope = Effect.runSync(Scope.make());
 
-// --- 🪵 EXHAUSTIVE LOG ---
+// Create a single, static runtime from the base layer.
 const AppRuntime = Effect.runSync(
-  Scope.extend(
-    Layer.toRuntime(ClientLive).pipe(
-      Effect.tap(() =>
-        Effect.logInfo(
-          "[runtime] ClientLive Layer has been built and is being converted to a Runtime.",
-        ),
-      ),
-    ),
-    appScope,
-  ),
+  Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
+
 export const clientRuntime = AppRuntime;
 
+// --- Effect Runners ---
+
+// This runner is for effects that require the full, authenticated context.
 export const runClientPromise = <A, E>(
-  effect: Effect.Effect<A, E, ClientContext>,
+  effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
-  return Runtime.runPromise(clientRuntime)(effect);
+  const currentUser = authState.value.user;
+  if (!currentUser) {
+    const error = new Error(
+      "runClientPromise called without an authenticated user.",
+    );
+    console.error(error.message, { effect });
+    return Promise.reject(error);
+  }
+
+  // Provide the dynamic, user-specific Replicache layer to the effect before running.
+  const effectWithAuth = Effect.provide(effect, ReplicacheLive(currentUser));
+
+  // Run the enhanced effect using the base runtime.
+  return Runtime.runPromise(clientRuntime)(effectWithAuth);
 };
 
+// This runner is for effects that only need the base, unauthenticated context.
 export const runClientUnscoped = <A, E>(
-  effect: Effect.Effect<A, E, ClientContext>,
+  effect: Effect.Effect<A, E, BaseClientContext>,
 ) => {
+  // The type of `effect` now correctly matches what `clientRuntime` can handle, so no assertion is needed.
   return Runtime.runFork(clientRuntime)(effect);
 };
+
 export const shutdownClient = () =>
   Effect.runPromise(Scope.close(appScope, Exit.succeed(undefined)));
 
@@ -125,11 +148,15 @@ const setupGlobalErrorLogger = () => {
       const error = Cause.isCause(errorCandidate)
         ? Cause.squash(errorCandidate)
         : errorCandidate;
+
+      // This call is now type-safe.
       runClientUnscoped(
         clientLog(
           "error",
           {
-            source: `GLOBAL_CATCH_${errorSource.toUpperCase().replace(" ", "_")}`,
+            source: `GLOBAL_CATCH_${errorSource
+              .toUpperCase()
+              .replace(" ", "_")}`,
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
           },
@@ -146,4 +173,5 @@ const setupGlobalErrorLogger = () => {
   );
 };
 
+// Initialize the global handler.
 setupGlobalErrorLogger();

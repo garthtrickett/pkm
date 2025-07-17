@@ -5,19 +5,18 @@ import { clientLog, RpcLogClient } from "./clientLog";
 import { LocationService } from "./LocationService";
 
 // --- Import page components ---
+import "../../components/pages/notes-page";
+import type { NotePage } from "../../components/pages/note-page";
 import "../../components/pages/login-page";
 import "../../components/pages/signup-page";
 import "../../components/pages/check-email-page";
 import "../../components/pages/verify-email-page";
 import type { VerifyEmailPage } from "../../components/pages/verify-email-page";
 import "../../components/pages/profile-page";
-// ✅ ADDED
 import "../../components/pages/forgot-password-page";
 import "../../components/pages/reset-password-page";
 import type { ResetPasswordPage } from "../../components/pages/reset-password-page";
 
-// ... (NotesView, UnauthorizedView, NotFoundView placeholders are unchanged)
-const NotesView = (): ViewResult => ({ template: html`<div>Notes Page</div>` });
 const UnauthorizedView = (): ViewResult => ({
   template: html`<div>403 Unauthorized</div>`,
 });
@@ -40,8 +39,20 @@ export interface Route {
 type MatchedRoute = Route & { params: string[] };
 
 const routes: Route[] = [
-  // ... (existing routes are unchanged)
-  { pattern: /^\/$/, view: NotesView, meta: { requiresAuth: true } },
+  {
+    pattern: /^\/$/,
+    view: () => document.createElement("notes-page"),
+    meta: { requiresAuth: true },
+  },
+  {
+    pattern: /^\/notes\/([^/]+)$/,
+    view: (id: string) => {
+      const el = document.createElement("note-page") as NotePage;
+      el.id = id; // Pass the ID as a property
+      return el;
+    },
+    meta: { requiresAuth: true },
+  },
   {
     pattern: /^\/login$/,
     view: () => document.createElement("login-page"),

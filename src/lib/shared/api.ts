@@ -3,6 +3,13 @@ import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
 import { AuthMiddleware, AuthError } from "./auth";
+
+import {
+  PullRequestSchema,
+  PullResponseSchema,
+  PushRequestSchema,
+} from "./replicache-schemas";
+
 export { AuthError };
 
 export class RequestError extends Schema.Class<RequestError>("RequestError")({
@@ -84,6 +91,19 @@ const ProtectedAuthRpc = RpcGroup.make(
     },
   }),
 ).middleware(AuthMiddleware);
+
+export const ReplicacheRpc = RpcGroup.make(
+  Rpc.make("replicachePull", {
+    success: PullResponseSchema,
+    error: AuthError, // For simplicity, reuse AuthError for failures
+    payload: PullRequestSchema,
+  }),
+  Rpc.make("replicachePush", {
+    success: Schema.Void,
+    error: AuthError,
+    payload: PushRequestSchema,
+  }),
+).middleware(AuthMiddleware); // These routes MUST be protected
 
 // The final exported group merges them.
 export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);

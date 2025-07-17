@@ -5,7 +5,7 @@ import type { PublicUser } from "../../shared/schemas";
 import { runClientUnscoped } from "../runtime";
 import { AuthError } from "../../shared/api";
 import { clientLog } from "../clientLog";
-import { ClientLive } from "../runtime";
+// The `ClientLive` import is no longer needed and should be removed.
 import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "../rpc";
 
 // --- Model & State ---
@@ -143,7 +143,6 @@ const handleAuthAction = (
 
 // --- Main Loop ---
 const RpcClientsLive = Layer.merge(RpcAuthClientLive, RpcLogClient.Default);
-
 const authProcess = Stream.fromQueue(_actionQueue).pipe(
   Stream.runForEach((action) =>
     handleAuthAction(action).pipe(
@@ -158,11 +157,13 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
     ),
   ),
 );
-
 runClientUnscoped(
   clientLog("info", "[authStore] Starting main auth processing stream..."),
 );
-runClientUnscoped(authProcess.pipe(Effect.provide(ClientLive)));
+
+// This is the corrected line.
+// The `authProcess` effect requires services that `runClientUnscoped` can already provide.
+runClientUnscoped(authProcess);
 
 // Initial action to kick things off
 proposeAuthAction({ type: "AUTH_CHECK_START" });

@@ -26,6 +26,7 @@ export const AppLayout = ({ children, auth }: Props): TemplateResult => {
 
   const loggedInNav = html`
     <div class="flex items-center gap-4">
+      <a href="/" @click=${handleLinkClick("/")} class="...">Notes</a>
       <a
         href="/profile"
         @click=${handleLinkClick("/profile")}
