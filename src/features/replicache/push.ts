@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import type { PushRequest } from "../../lib/shared/replicache-schemas";
 import { sql } from "kysely";
 import { Db } from "../../db/DbTag";
-import { Auth } from "../../lib/server/auth";
+import { Auth, AuthError } from "../../lib/server/auth";
 import { NoteIdSchema, UserIdSchema } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import type { ReplicacheClientId } from "../../types/generated/public/ReplicacheClient";
@@ -39,8 +39,6 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         const args = yield* _(
           Schema.decodeUnknown(CreateNoteArgsSchema)(mutation.args),
         );
-        // ✅ FIX: The 'note' table has a NOT NULL 'content' column.
-        // We must provide a default value for it on creation.
         const newNote: NewNote = {
           id: args.id,
           title: args.title,
@@ -96,13 +94,17 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
     }
   });
 
-// 🔄 MODIFIED: Correctly handle transaction errors and trigger poke
+// ✅ THIS IS THE FIX ✅
+// 1. Change the return type to allow an AuthError to be returned.
+// 2. Remove the internal matchEffect and let the transactionEffect propagate its failure.
 export const handlePush = (
   req: PushRequest,
-): Effect.Effect<void, never, Db | Auth | PokeService> =>
+): Effect.Effect<void, AuthError, Db | Auth | PokeService> =>
   Effect.gen(function* (_) {
     const { clientGroupID, mutations } = req;
-    if (mutations.length === 0) return;
+    if (mutations.length === 0) {
+      return;
+    }
 
     const db = yield* _(Db);
     const { user } = yield* _(Auth);
@@ -115,58 +117,55 @@ export const handlePush = (
       ),
     );
 
-    const transactionEffect = Effect.promise(() =>
-      db.transaction().execute(async (trx) => {
-        const clientID = `${clientGroupID}-${user!.id}`;
-        const clientState = await trx
-          .selectFrom("replicache_client")
-          .selectAll()
-          .where("id", "=", clientID as ReplicacheClientId)
-          .forUpdate()
-          .executeTakeFirst();
-
-        if (!clientState) {
-          throw new Error(`Client state not found for id: ${clientID}`);
-        }
-
-        for (const mutation of mutations) {
-          const expectedMutationID = clientState.last_mutation_id + 1;
-          if (mutation.id < expectedMutationID) {
-            continue;
+    const transactionEffect = Effect.tryPromise({
+      try: () =>
+        db.transaction().execute(async (trx) => {
+          const clientID = `${clientGroupID}-${user!.id}`;
+          const clientState = await trx
+            .selectFrom("replicache_client")
+            .selectAll()
+            .where("id", "=", clientID as ReplicacheClientId)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!clientState) {
+            throw new Error(`Client state not found for id: ${clientID}`);
           }
-          if (mutation.id > expectedMutationID) {
-            throw new Error(
-              `Mutation ${mutation.id} out of order; expected ${expectedMutationID}`,
+          for (const mutation of mutations) {
+            const expectedMutationID = clientState.last_mutation_id + 1;
+            if (mutation.id < expectedMutationID) {
+              continue;
+            }
+            if (mutation.id > expectedMutationID) {
+              throw new Error(
+                `Mutation ${mutation.id} out of order; expected ${expectedMutationID}`,
+              );
+            }
+            const mutationEffect = applyMutation(mutation);
+            await Effect.runPromise(
+              mutationEffect.pipe(
+                Effect.provideService(Db, trx as Kysely<Database>),
+                Effect.provideService(Auth, { user: user!, session: null }),
+              ),
             );
+            clientState.last_mutation_id = mutation.id;
           }
-          const mutationEffect = applyMutation(mutation);
-          await Effect.runPromise(
-            mutationEffect.pipe(
-              Effect.provideService(Db, trx as Kysely<Database>),
-              Effect.provideService(Auth, { user: user!, session: null }),
-            ),
-          );
-          clientState.last_mutation_id = mutation.id;
-        }
-        await trx
-          .updateTable("replicache_client")
-          .set({ last_mutation_id: clientState.last_mutation_id })
-          .where("id", "=", clientID as ReplicacheClientId)
-          .execute();
-      }),
-    );
+          await trx
+            .updateTable("replicache_client")
+            .set({ last_mutation_id: clientState.last_mutation_id })
+            .where("id", "=", clientID as ReplicacheClientId)
+            .execute();
+        }),
+      catch: (cause) =>
+        new AuthError({
+          _tag: "InternalServerError",
+          message:
+            cause instanceof Error ? cause.message : "Transaction failed",
+        }),
+    });
 
-    // This is the fix. We match on the outcome of the transaction effect.
-    yield* transactionEffect.pipe(
-      Effect.matchEffect({
-        onSuccess: () => {
-          // If the transaction succeeded, poke other clients.
-          return pokeService.poke(user!.id);
-        },
-        onFailure: (error) => {
-          // If it failed, log the error.
-          return Effect.logError("Transaction failed during push", { error });
-        },
-      }),
-    );
+    // Let the transaction run. If it fails, the error will be caught by the HTTP handler.
+    yield* transactionEffect;
+
+    // This code only runs if the transaction was successful.
+    yield* pokeService.poke(user!.id);
   });

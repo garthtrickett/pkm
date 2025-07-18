@@ -12,7 +12,7 @@ export default interface ReplicacheClientGroupTable {
 
   user_id: ColumnType<string, string, string>;
 
-  cvr_version: ColumnType<number, number | undefined, number>;
+  cvr_version: ColumnType<string, string | undefined, string>;
 
   updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
 }

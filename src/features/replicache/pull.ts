@@ -20,7 +20,6 @@ import type {
 import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
 import type { NoteId } from "../../lib/shared/schemas";
 import type { BlockId } from "../../lib/shared/schemas";
-// ✅ FIX: Import Kysely's Transaction type and our Database interface.
 import { type Transaction } from "kysely";
 import type { Database } from "../../types";
 
@@ -31,7 +30,6 @@ type ClientState = {
 
 // Helper to get or create client group and client state within a transaction
 const getOrCreateClientState = (
-  // ✅ FIX: Use the specific Transaction type instead of `any` to preserve type information.
   trx: Transaction<Database>,
   clientGroupID: string,
   user: PublicUser,
@@ -57,7 +55,7 @@ const getOrCreateClientState = (
                 .values({
                   id: groupID,
                   user_id: user.id,
-                  cvr_version: 0,
+                  cvr_version: "0",
                 })
                 .returningAll()
                 .executeTakeFirstOrThrow(),
@@ -85,7 +83,7 @@ const getOrCreateClientState = (
                 .insertInto("replicache_client")
                 .values({
                   id: clientID as ReplicacheClientId,
-                  client_group_id: clientGroup.id, // This now has the correct type
+                  client_group_id: clientGroup.id,
                   last_mutation_id: 0,
                 })
                 .returningAll()
@@ -99,7 +97,6 @@ const getOrCreateClientState = (
     return { client, clientGroup };
   });
 
-// The rest of the file remains the same as the previous correct version.
 export const handlePull = (
   req: PullRequest,
 ): Effect.Effect<PullResponse, AuthError, Db | Auth> =>
@@ -107,9 +104,9 @@ export const handlePull = (
     const { clientGroupID } = req;
     const fromVersion = req.cookie ?? 0;
 
-    yield* _(
-      Effect.logInfo({ clientGroupID, fromVersion }, "Processing pull request"),
-    );
+    // yield* _(
+    //   Effect.logInfo({ clientGroupID, fromVersion }, "Processing pull request"),
+    // );
 
     const db = yield* _(Db);
     const { user } = yield* _(Auth);
@@ -144,6 +141,7 @@ export const handlePull = (
               })
               .returning("id")
               .executeTakeFirstOrThrow();
+
             const nextVersion = Number(nextCVR.id);
 
             const changedNotes = await trx
@@ -212,7 +210,7 @@ export const handlePull = (
 
             await trx
               .updateTable("replicache_client_group")
-              .set({ cvr_version: nextVersion })
+              .set({ cvr_version: nextCVR.id })
               .where("id", "=", clientGroup.id)
               .execute();
 
@@ -231,7 +229,8 @@ export const handlePull = (
           });
         },
       }),
-      Effect.flatMap(Schema.decodeUnknown(PullResponseSchema)),
+      // ✅ FIX: Use flatMap to handle the Either from decodeUnknown
+      Effect.flatMap(Schema.validate(PullResponseSchema)),
     );
 
     return pullResult;

@@ -93,10 +93,10 @@ export const AuthMiddlewareLive = Layer.effect(
         }
 
         yield* Metric.increment(sessionValidationSuccessCounter);
-        yield* Effect.logInfo(
-          { clientId, userId: user.id, rpc: rpcTag },
-          "[AuthMiddleware] SUCCESS: Session validated successfully. Providing Auth service to handler.",
-        );
+        // yield* Effect.logInfo(
+        //   { clientId, userId: user.id, rpc: rpcTag },
+        //   "[AuthMiddleware] SUCCESS: Session validated successfully. Providing Auth service to handler.",
+        // );
         return { user, session };
       });
 
@@ -163,10 +163,10 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
     }
 
     yield* Metric.increment(sessionValidationSuccessCounter);
-    yield* Effect.logInfo(
-      { userId: validationResult.user.id, url: request.url },
-      "[httpAuthMiddleware] SUCCESS: Session validated successfully.",
-    );
+    // yield* Effect.logInfo(
+    //   { userId: validationResult.user.id, url: request.url },
+    //   "[httpAuthMiddleware] SUCCESS: Session validated successfully.",
+    // );
     const authService = Auth.of({
       user: validationResult.user,
       session: validationResult.session,

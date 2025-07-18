@@ -20,6 +20,8 @@ import {
 } from "./rpc";
 import { authState } from "./stores/authStore";
 import { ReplicacheLive, ReplicacheService } from "./replicache";
+// ✅ ADD: Import PublicUser type
+import type { PublicUser } from "../shared/schemas";
 
 // --- Context Definitions ---
 export type BaseClientContext =
@@ -57,8 +59,7 @@ let replicacheScope: Scope.CloseableScope | null = null;
 const AppRuntime = Effect.runSync(
   Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
-// ✅ FIX 2: Use a type assertion. This is safe because we gate access to the
-// full context via `runClientPromise`, which checks the auth state.
+
 export let clientRuntime: Runtime.Runtime<FullClientContext> =
   AppRuntime as Runtime.Runtime<FullClientContext>;
 
@@ -66,32 +67,30 @@ export let clientRuntime: Runtime.Runtime<FullClientContext> =
  * An effect to initialize the Replicache service and update the global runtime.
  * This should be called ONLY when a user is authenticated.
  */
-export const initializeReplicacheRuntime = Effect.gen(function* () {
-  const currentUser = authState.value.user;
-  if (!currentUser) {
-    return yield* Effect.die(
-      new Error("Cannot initialize Replicache without a user."),
+// ✅ FIX: Accept the user as an argument to avoid depending on global state.
+export const initializeReplicacheRuntime = (user: PublicUser) =>
+  Effect.gen(function* () {
+    if (replicacheScope) {
+      yield* Scope.close(replicacheScope, Exit.succeed(undefined));
+    }
+
+    const newScope = yield* Scope.fork(appScope, ExecutionStrategy.sequential);
+    replicacheScope = newScope;
+
+    // ✅ FIX: Use the user argument to create the layer.
+    const replicacheLayer = ReplicacheLive(user);
+    const fullLayer = Layer.merge(BaseClientLive, replicacheLayer);
+    const newRuntime = yield* Scope.extend(
+      Layer.toRuntime(fullLayer),
+      newScope,
     );
-  }
 
-  if (replicacheScope) {
-    yield* Scope.close(replicacheScope, Exit.succeed(undefined));
-  }
-
-  // ✅ FIX 1: Correctly `yield*` the forked scope from the Effect.
-  const newScope = yield* Scope.fork(appScope, ExecutionStrategy.sequential);
-  replicacheScope = newScope;
-
-  const replicacheLayer = ReplicacheLive(currentUser);
-  const fullLayer = Layer.merge(BaseClientLive, replicacheLayer);
-  const newRuntime = yield* Scope.extend(Layer.toRuntime(fullLayer), newScope);
-
-  clientRuntime = newRuntime;
-  yield* clientLog(
-    "info",
-    "[runtime] Replicache runtime initialized and activated.",
-  );
-});
+    clientRuntime = newRuntime;
+    yield* clientLog(
+      "info",
+      "[runtime] Replicache runtime initialized and activated.",
+    );
+  });
 
 /**
  * An effect to shut down the Replicache service and revert the runtime.

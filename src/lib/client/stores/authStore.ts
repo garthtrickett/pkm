@@ -2,7 +2,6 @@
 import { signal } from "@preact/signals-core";
 import { Data, Effect, Layer, Queue, Stream } from "effect";
 import type { PublicUser } from "../../shared/schemas";
-// ✅ FIX: Import the new runtime functions
 import {
   runClientUnscoped,
   initializeReplicacheRuntime,
@@ -50,7 +49,7 @@ export const proposeAuthAction = (action: AuthAction): void => {
   runClientUnscoped(Queue.offer(_actionQueue, action));
 };
 
-// --- Update Logic ---
+// --- Pure Update Function ---
 const update = (model: AuthModel, action: AuthAction): AuthModel => {
   switch (action.type) {
     case "AUTH_CHECK_START":
@@ -70,23 +69,17 @@ const update = (model: AuthModel, action: AuthAction): AuthModel => {
   }
 };
 
-// --- Action Handler ---
+// --- Action Handler (FIXED) ---
 const handleAuthAction = (
   action: AuthAction,
 ): Effect.Effect<void, Error, RpcAuthClient | RpcLogClient> =>
   Effect.gen(function* () {
-    const oldStatus = authState.value.status;
-    authState.value = update(authState.value, action);
-    yield* clientLog(
-      "info",
-      `[authStore] State updated: ${oldStatus} -> ${authState.value.status}`,
-      { actionType: action.type },
-    );
-
     const authClient = yield* RpcAuthClient;
 
     switch (action.type) {
       case "AUTH_CHECK_START": {
+        // Set state to 'authenticating' to show loading UI
+        authState.value = update(authState.value, action);
         const result = yield* Effect.either(authClient.me());
         if (result._tag === "Right") {
           proposeAuthAction({
@@ -101,27 +94,45 @@ const handleAuthAction = (
         }
         break;
       }
-      // ✅ FIX: When auth succeeds, initialize the Replicache runtime
+
+      // ✅ THIS IS THE FIX ✅
+      // On success, initialize services BEFORE updating the state to 'authenticated'
       case "AUTH_CHECK_SUCCESS":
       case "SET_AUTHENTICATED": {
-        yield* initializeReplicacheRuntime;
+        // Step 1: Initialize the runtime with the authenticated user from the action payload.
+        yield* initializeReplicacheRuntime(action.payload);
+
+        // Step 2: NOW update the global state. This will trigger the UI to render
+        // components that can safely depend on the initialized runtime.
+        authState.value = update(authState.value, action);
+
+        yield* clientLog(
+          "info",
+          `[authStore] State is now authenticated and runtime is ready.`,
+        );
         break;
       }
-      // ✅ FIX: When auth fails, shut down the Replicache runtime
+
+      // On failure, shut down services BEFORE updating the state to 'unauthenticated'
       case "AUTH_CHECK_FAILURE": {
         yield* shutdownReplicacheRuntime;
+        authState.value = update(authState.value, action);
         break;
       }
+
       case "LOGOUT_START": {
+        authState.value = update(authState.value, action);
         yield* Effect.either(authClient.logout());
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
       }
+
+      // On logout success, shut down services BEFORE updating the final state
       case "LOGOUT_SUCCESS": {
         document.cookie =
           "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-        // ✅ FIX: Shut down replicache runtime on logout
         yield* shutdownReplicacheRuntime;
+        authState.value = update(authState.value, action);
         break;
       }
     }
@@ -143,6 +154,7 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
     ),
   ),
 );
+
 runClientUnscoped(
   clientLog("info", "[authStore] Starting main auth processing stream..."),
 );
