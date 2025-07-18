@@ -15,6 +15,7 @@ import type { default as EmailVerificationTokenTable } from './EmailVerification
 import type { default as NoteTable } from './Note';
 import type { default as KyselyMigrationTable } from './KyselyMigration';
 import type { default as BlockTable } from './Block';
+import type { default as PokeLogTable } from './PokeLog';
 
 export default interface PublicSchema {
   replicache_client_group: ReplicacheClientGroupTable;
@@ -44,4 +45,6 @@ export default interface PublicSchema {
   kysely_migration: KyselyMigrationTable;
 
   block: BlockTable;
+
+  poke_log: PokeLogTable;
 }

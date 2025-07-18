@@ -1,4 +1,4 @@
-// migrations/2025070201_create_block.ts
+// src/migrations/04_create_block.ts
 import { Kysely, sql } from "kysely";
 import type { Database } from "../types";
 
@@ -26,6 +26,9 @@ export async function up(db: Kysely<Database>) {
     .addColumn("file_path", "text", (c) => c.notNull())
     .addColumn("parent_id", "uuid", (c) =>
       c.references("block.id").onDelete("cascade"),
+    )
+    .addColumn("note_id", "uuid", (c) =>
+      c.references("note.id").onDelete("cascade"),
     )
     .addColumn("depth", "integer", (c) => c.notNull())
     .addColumn("order", "integer", (c) => c.notNull())

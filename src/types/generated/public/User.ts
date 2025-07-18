@@ -14,13 +14,13 @@ export default interface UserTable {
 
   password_hash: ColumnType<string, string, string>;
 
-  created_at: ColumnType<Date, Date | string | undefined, Date | string>;
-
   permissions: ColumnType<string[] | null, string[] | null, string[] | null>;
 
   avatar_url: ColumnType<string | null, string | null, string | null>;
 
   email_verified: ColumnType<boolean, boolean | undefined, boolean>;
+
+  created_at: ColumnType<Date, Date | string | undefined, Date | string>;
 }
 
 export type User = Selectable<UserTable>;

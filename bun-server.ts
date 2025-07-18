@@ -86,9 +86,6 @@ const pullHandler = Effect.gen(function* () {
 
   const result = yield* handlePull(body);
 
-  // ✅ THIS IS THE FIX: Revert to using schemaJson.
-  // This is now safe because `handlePull` returns a JSON-compatible object
-  // that will pass validation against the `PullResponseSchema`.
   return yield* HttpServerResponse.schemaJson(PullResponseSchema)(result);
 }).pipe(
   Effect.catchAll((error) => {

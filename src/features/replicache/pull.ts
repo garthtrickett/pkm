@@ -1,12 +1,16 @@
 // src/features/replicache/pull.ts
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import {
   type PullRequest,
   type PullResponse,
 } from "../../lib/shared/replicache-schemas";
 import { Db } from "../../db/DbTag";
 import { Auth, AuthError } from "../../lib/server/auth";
-import type { PublicUser } from "../../lib/shared/schemas";
+import {
+  BlockIdSchema,
+  NoteIdSchema,
+  type PublicUser,
+} from "../../lib/shared/schemas";
 import type {
   ReplicacheClient,
   ReplicacheClientId,
@@ -16,8 +20,6 @@ import type {
   ReplicacheClientGroup,
 } from "../../types/generated/public/ReplicacheClientGroup";
 import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
-import type { NoteId } from "../../lib/shared/schemas";
-import type { BlockId } from "../../lib/shared/schemas";
 import { type Transaction } from "kysely";
 import type { Database } from "../../types";
 
@@ -33,7 +35,6 @@ const getOrCreateClientState = (
   user: PublicUser,
 ): Effect.Effect<ClientState> =>
   Effect.gen(function* (_) {
-    // ✅ FIX: Use the clientGroupID from the request as the group's unique ID.
     const groupID = clientGroupID as ReplicacheClientGroupId;
 
     const clientGroup = yield* _(
@@ -41,7 +42,6 @@ const getOrCreateClientState = (
         trx
           .selectFrom("replicache_client_group")
           .selectAll()
-          // ✅ FIX: Look up the group using the correct ID.
           .where("id", "=", groupID)
           .executeTakeFirst(),
       ),
@@ -53,10 +53,10 @@ const getOrCreateClientState = (
               trx
                 .insertInto("replicache_client_group")
                 .values({
-                  // ✅ FIX: Insert using the correct ID.
                   id: groupID,
                   user_id: user.id,
-                  cvr_version: "0",
+                  // ✅ FIX: cvr_version is a number, not a string.
+                  cvr_version: 0,
                 })
                 .returningAll()
                 .executeTakeFirstOrThrow(),
@@ -84,7 +84,6 @@ const getOrCreateClientState = (
                 .insertInto("replicache_client")
                 .values({
                   id: clientID as ReplicacheClientId,
-                  // This is now correct, as clientGroup.id is the clientGroupID
                   client_group_id: clientGroup.id,
                   last_mutation_id: 0,
                 })
@@ -161,7 +160,6 @@ export const handlePull = (
 
             const patch: Array<PullResponse["patch"][number]> = [];
 
-            // --- THIS LOGIC IS NOW RESTORED ---
             for (const note of changedNotes) {
               patch.push({
                 op: "put",
@@ -190,7 +188,7 @@ export const handlePull = (
                   note_id: block.note_id,
                   type: block.type,
                   content: block.content,
-                  fields: JSON.parse(JSON.stringify(block.fields ?? {})),
+                  fields: block.fields ?? {},
                   tags: block.tags,
                   links: block.links,
                   file_path: block.file_path,
@@ -209,15 +207,19 @@ export const handlePull = (
               const prevCVR = await trx
                 .selectFrom("client_view_record")
                 .select("data")
-                .where("id", "=", String(fromVersion) as ClientViewRecordId)
+                // ✅ FIX: Do not convert `fromVersion` to a string.
+                .where("id", "=", fromVersion as ClientViewRecordId)
                 .where("user_id", "=", user!.id)
                 .executeTakeFirst();
 
               if (prevCVR) {
-                const prevData = prevCVR.data as {
-                  notes: string[];
-                  blocks: string[];
-                };
+                const CvrDataSchema = Schema.Struct({
+                  notes: Schema.Array(NoteIdSchema),
+                  blocks: Schema.Array(BlockIdSchema),
+                });
+                const prevData = Schema.decodeUnknownSync(CvrDataSchema)(
+                  prevCVR.data,
+                );
                 const prevNoteIds = new Set(prevData.notes);
                 const prevBlockIds = new Set(prevData.blocks);
 
@@ -225,18 +227,17 @@ export const handlePull = (
                 const currentBlockIds = new Set(allBlocks.map((b) => b.id));
 
                 for (const id of prevNoteIds) {
-                  if (!currentNoteIds.has(id as NoteId)) {
+                  if (!currentNoteIds.has(id)) {
                     patch.push({ op: "del", key: `note/${id}` });
                   }
                 }
                 for (const id of prevBlockIds) {
-                  if (!currentBlockIds.has(id as BlockId)) {
+                  if (!currentBlockIds.has(id)) {
                     patch.push({ op: "del", key: `block/${id}` });
                   }
                 }
               }
             }
-            // --- END OF RESTORED LOGIC ---
 
             const response: PullResponse = {
               cookie: nextVersion,

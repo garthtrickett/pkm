@@ -1,4 +1,4 @@
-// migrations/2025070501_create_poke_log.ts
+// src/migrations/06_create_poke_log.ts
 import { Kysely } from "kysely";
 import type { Database } from "../types";
 

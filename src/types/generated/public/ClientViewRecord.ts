@@ -5,7 +5,7 @@ import type { UserId } from './User';
 import type { ColumnType, Selectable, Insertable, Updateable } from 'kysely';
 
 /** Identifier type for public.client_view_record */
-export type ClientViewRecordId = string & { __brand: 'public.client_view_record' };
+export type ClientViewRecordId = number & { __brand: 'public.client_view_record' };
 
 /** Represents the table public.client_view_record */
 export default interface ClientViewRecordTable {

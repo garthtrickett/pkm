@@ -6,13 +6,15 @@ import {
   type Puller,
   type PullRequest,
   type HTTPRequestInfo,
+  // ✅ Import the specific V1 result type
+  type PullerResultV1,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
+import { PullResponseSchema } from "../shared/replicache-schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import { runClientUnscoped } from "./runtime";
-import { clientLog } from "./clientLog";
 
 // --- Mutators (unchanged) ---
 const mutators = {
@@ -44,10 +46,6 @@ const mutators = {
   ) => {
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
-    if (noteJSON === undefined) {
-      console.warn(`Note with id ${args.id} not found for update.`);
-      return;
-    }
     const note = Schema.decodeUnknownSync(NoteSchema)(noteJSON);
     const updatedNote: Note = {
       ...note,
@@ -78,8 +76,10 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-// ✅ A more robust and diagnostic puller function with extensive logging
-const debugPuller: Puller = async (request: PullRequest) => {
+// ✅ FIX: Define the puller with a specific V1 return type, then cast it.
+const debugPuller: Puller = (async (
+  request: PullRequest,
+): Promise<PullerResultV1> => {
   try {
     const response = await fetch("/api/replicache/pull", {
       method: "POST",
@@ -87,63 +87,33 @@ const debugPuller: Puller = async (request: PullRequest) => {
       body: JSON.stringify(request),
     });
 
-    // Step 1: Log the raw text response from the server.
     const responseText = await response.text();
-    console.log("[PULLER] Raw text from server:", responseText);
-
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: response.status,
-      errorMessage: response.statusText,
+      errorMessage: response.ok ? "" : responseText,
     };
 
     if (!response.ok) {
-      console.error(
-        `[PULLER] Fetch failed with status ${response.status}`,
-        responseText,
-      );
-      return {
-        error: `Fetch failed with status ${response.status}`,
-        httpRequestInfo,
-      };
+      // On failure, return an undefined response as required by the type.
+      return { response: undefined, httpRequestInfo };
     }
 
-    // Step 2: Parse the JSON and log the resulting object.
-    const pullResponse = JSON.parse(responseText);
-    console.log("[PULLER] Parsed pullResponse object:", pullResponse);
+    const pullResponseV1 = Schema.decodeUnknownSync(PullResponseSchema)(
+      JSON.parse(responseText),
+    );
 
-    // --- ADD THIS DETAILED LOGGING ---
-    // Step 3: Explicitly check the types of critical fields after parsing.
-    if (pullResponse) {
-      console.log(
-        `[PULLER] ✅ typeof pullResponse.cookie: ${typeof pullResponse.cookie}`,
-      );
-      console.log(
-        `[PULLER] ✅ typeof pullResponse.lastMutationID: ${typeof pullResponse.lastMutationID}`,
-      );
-    } else {
-      console.error(
-        "[PULLER] ❌ pullResponse is null or undefined after parsing!",
-      );
-    }
-    // --- END DETAILED LOGGING ---
-
-    // This is the object we will return
-    const result = { response: pullResponse, httpRequestInfo };
-
-    // Step 4: Log the final object being sent to Replicache for validation.
-    console.log("[PULLER] ✅ Returning this object to Replicache:", result);
-
-    return result;
+    // This object now perfectly matches the PullResponseV1 shape.
+    return { response: pullResponseV1, httpRequestInfo };
   } catch (e) {
-    console.error("Error in custom puller:", e);
     const errorMsg = e instanceof Error ? e.message : "Unknown puller error";
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: 0,
       errorMessage: errorMsg,
     };
-    return { error: errorMsg, httpRequestInfo };
+    // On exception, also return with an undefined response.
+    return { response: undefined, httpRequestInfo };
   }
-};
+}) as Puller; // The type assertion happens here.
 
 export const ReplicacheLive = (
   user: PublicUser,

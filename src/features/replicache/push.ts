@@ -39,12 +39,19 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         const args = yield* _(
           Schema.decodeUnknown(CreateNoteArgsSchema)(mutation.args),
         );
+        // ✅ THIS IS THE FIX ✅
+        // Explicitly set all fields, including timestamps, to ensure the record
+        // is complete and matches what the client optimistically created.
+        // This prevents race conditions or mismatches with DB defaults.
+        const now = new Date();
         const newNote: NewNote = {
           id: args.id,
           title: args.title,
           content: "", // Start with empty content
           user_id: user!.id,
           version: 1,
+          created_at: now,
+          updated_at: now,
         };
         yield* _(
           Effect.promise(() => db.insertInto("note").values(newNote).execute()),
@@ -94,7 +101,6 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
     }
   });
 
-// ✅ THIS IS THE FIX ✅
 // 1. Change the return type to allow an AuthError to be returned.
 // 2. Remove the internal matchEffect and let the transactionEffect propagate its failure.
 export const handlePush = (

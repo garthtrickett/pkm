@@ -1,4 +1,4 @@
-// src/lib/shared/replicache-schemas.ts
+// FILE: ./src/lib/shared/replicache-schemas.ts
 import { Schema } from "effect";
 import { NoteIdSchema, UserIdSchema, BlockIdSchema } from "./schemas";
 
@@ -11,7 +11,6 @@ export const PullRequestSchema = Schema.Struct({
 export type PullRequest = Schema.Schema.Type<typeof PullRequestSchema>;
 
 const SerializedNoteSchema = Schema.Struct({
-  // ✅ ADD DISCRIMINATOR TAG
   _tag: Schema.Literal("note"),
   id: NoteIdSchema,
   user_id: UserIdSchema,
@@ -23,7 +22,6 @@ const SerializedNoteSchema = Schema.Struct({
 });
 
 const SerializedBlockSchema = Schema.Struct({
-  // ✅ ADD DISCRIMINATOR TAG
   _tag: Schema.Literal("block"),
   id: BlockIdSchema,
   user_id: UserIdSchema,
@@ -48,7 +46,6 @@ const PatchOperationSchema = Schema.Union(
   Schema.Struct({
     op: Schema.Literal("put"),
     key: Schema.String,
-    // This is now a discriminated union, which is much more reliable
     value: Schema.Union(SerializedNoteSchema, SerializedBlockSchema),
   }),
   Schema.Struct({ op: Schema.Literal("del"), key: Schema.String }),
@@ -62,12 +59,13 @@ export const PullResponseSchema = Schema.Struct({
       encode: (output: number) => output,
     },
   ),
-  // ✅ THE FIX: Change `lastMutationID` to `lastMutationIDChanges`
   lastMutationIDChanges: Schema.Record({
     key: Schema.String,
     value: Schema.Number,
   }),
-  patch: Schema.Array(PatchOperationSchema),
+  // ✅ THIS IS THE FIX ✅
+  // Wrap the Schema.Array in Schema.mutable to produce a mutable array type.
+  patch: Schema.mutable(Schema.Array(PatchOperationSchema)),
 });
 export type PullResponse = Schema.Schema.Type<typeof PullResponseSchema>;
 
