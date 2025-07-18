@@ -1,6 +1,6 @@
 // src/lib/shared/replicache-schemas.ts
 import { Schema } from "effect";
-import { BlockSchema, NoteSchema } from "./schemas";
+import { NoteIdSchema, UserIdSchema, BlockIdSchema } from "./schemas";
 
 // --- PULL ---
 export const PullRequestSchema = Schema.Struct({
@@ -10,19 +10,63 @@ export const PullRequestSchema = Schema.Struct({
 });
 export type PullRequest = Schema.Schema.Type<typeof PullRequestSchema>;
 
+const SerializedNoteSchema = Schema.Struct({
+  // ✅ ADD DISCRIMINATOR TAG
+  _tag: Schema.Literal("note"),
+  id: NoteIdSchema,
+  user_id: UserIdSchema,
+  title: Schema.String,
+  content: Schema.String,
+  version: Schema.Number,
+  created_at: Schema.String,
+  updated_at: Schema.String,
+});
+
+const SerializedBlockSchema = Schema.Struct({
+  // ✅ ADD DISCRIMINATOR TAG
+  _tag: Schema.Literal("block"),
+  id: BlockIdSchema,
+  user_id: UserIdSchema,
+  note_id: Schema.Union(NoteIdSchema, Schema.Null),
+  type: Schema.String,
+  content: Schema.String,
+  fields: Schema.Any,
+  tags: Schema.mutable(Schema.Array(Schema.String)),
+  links: Schema.mutable(Schema.Array(Schema.String)),
+  file_path: Schema.String,
+  parent_id: Schema.Union(BlockIdSchema, Schema.Null),
+  depth: Schema.Number,
+  order: Schema.Number,
+  transclusions: Schema.mutable(Schema.Array(Schema.String)),
+  version: Schema.Number,
+  created_at: Schema.String,
+  updated_at: Schema.String,
+});
+
 const PatchOperationSchema = Schema.Union(
   Schema.Struct({ op: Schema.Literal("clear") }),
   Schema.Struct({
     op: Schema.Literal("put"),
     key: Schema.String,
-    value: Schema.Union(NoteSchema, BlockSchema),
+    // This is now a discriminated union, which is much more reliable
+    value: Schema.Union(SerializedNoteSchema, SerializedBlockSchema),
   }),
   Schema.Struct({ op: Schema.Literal("del"), key: Schema.String }),
 );
-
 export const PullResponseSchema = Schema.Struct({
-  cookie: Schema.Number,
-  lastMutationID: Schema.Number,
+  cookie: Schema.transform(
+    Schema.Union(Schema.Number, Schema.String),
+    Schema.Number,
+    {
+      decode: (input: string | number) => Number(input),
+      encode: (output: number) => output,
+    },
+  ),
+  // ✅ THE FIX: Change `lastMutationID` to `lastMutationIDChanges`
+  lastMutationIDChanges: Schema.Record({
+    key: Schema.String,
+    value: Schema.Number,
+  }),
   patch: Schema.Array(PatchOperationSchema),
 });
 export type PullResponse = Schema.Schema.Type<typeof PullResponseSchema>;
@@ -30,7 +74,7 @@ export type PullResponse = Schema.Schema.Type<typeof PullResponseSchema>;
 const MutationSchema = Schema.Struct({
   id: Schema.Number,
   name: Schema.String,
-  args: Schema.Any, // Or a more specific schema for your mutator args
+  args: Schema.Any,
 });
 
 export const PushRequestSchema = Schema.Struct({

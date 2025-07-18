@@ -3,12 +3,16 @@ import {
   Replicache,
   type ReadonlyJSONValue,
   type WriteTransaction,
+  type Puller,
+  type PullRequest,
+  type HTTPRequestInfo,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import { runClientUnscoped } from "./runtime";
+import { clientLog } from "./clientLog";
 
 // --- Mutators (unchanged) ---
 const mutators = {
@@ -74,30 +78,92 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-// This function returns a SCOPED LAYER.
-// A scoped layer automatically handles setup (acquire) and teardown (release).
+// ✅ A more robust and diagnostic puller function with extensive logging
+const debugPuller: Puller = async (request: PullRequest) => {
+  try {
+    const response = await fetch("/api/replicache/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+
+    // Step 1: Log the raw text response from the server.
+    const responseText = await response.text();
+    console.log("[PULLER] Raw text from server:", responseText);
+
+    const httpRequestInfo: HTTPRequestInfo = {
+      httpStatusCode: response.status,
+      errorMessage: response.statusText,
+    };
+
+    if (!response.ok) {
+      console.error(
+        `[PULLER] Fetch failed with status ${response.status}`,
+        responseText,
+      );
+      return {
+        error: `Fetch failed with status ${response.status}`,
+        httpRequestInfo,
+      };
+    }
+
+    // Step 2: Parse the JSON and log the resulting object.
+    const pullResponse = JSON.parse(responseText);
+    console.log("[PULLER] Parsed pullResponse object:", pullResponse);
+
+    // --- ADD THIS DETAILED LOGGING ---
+    // Step 3: Explicitly check the types of critical fields after parsing.
+    if (pullResponse) {
+      console.log(
+        `[PULLER] ✅ typeof pullResponse.cookie: ${typeof pullResponse.cookie}`,
+      );
+      console.log(
+        `[PULLER] ✅ typeof pullResponse.lastMutationID: ${typeof pullResponse.lastMutationID}`,
+      );
+    } else {
+      console.error(
+        "[PULLER] ❌ pullResponse is null or undefined after parsing!",
+      );
+    }
+    // --- END DETAILED LOGGING ---
+
+    // This is the object we will return
+    const result = { response: pullResponse, httpRequestInfo };
+
+    // Step 4: Log the final object being sent to Replicache for validation.
+    console.log("[PULLER] ✅ Returning this object to Replicache:", result);
+
+    return result;
+  } catch (e) {
+    console.error("Error in custom puller:", e);
+    const errorMsg = e instanceof Error ? e.message : "Unknown puller error";
+    const httpRequestInfo: HTTPRequestInfo = {
+      httpStatusCode: 0,
+      errorMessage: errorMsg,
+    };
+    return { error: errorMsg, httpRequestInfo };
+  }
+};
+
 export const ReplicacheLive = (
   user: PublicUser,
 ): Layer.Layer<ReplicacheService> =>
   Layer.scoped(
     ReplicacheService,
     Effect.acquireRelease(
-      // Acquire: This effect runs to create the service.
       Effect.sync(() => {
         const client = new Replicache({
           licenseKey: "l2c75a896d85a4914a51e54a32338b556",
           name: user.id,
           pushURL: "/api/replicache/push",
-          pullURL: "/api/replicache/pull",
+          puller: debugPuller,
           mutators,
         });
 
-        // Fork the WebSocket setup into the background.
         runClientUnscoped(Effect.forkDaemon(setupWebSocket(client)));
 
         return { client };
       }),
-      // Release: This effect runs when the scope is closed (e.g., on logout).
       (service) => Effect.sync(() => service.client.close()),
     ),
   );

@@ -1,4 +1,4 @@
-// in  // FILE: ./bun-server.ts
+// FILE: ./bun-server.ts
 import {
   HttpRouter,
   HttpServer,
@@ -34,8 +34,8 @@ import { handlePull } from "./src/features/replicache/pull";
 import { handlePush } from "./src/features/replicache/push";
 import {
   PullRequestSchema,
-  PullResponseSchema,
   PushRequestSchema,
+  PullResponseSchema, // ✅ Import the response schema
 } from "./src/lib/shared/replicache-schemas";
 
 // --- Layer Definitions ---
@@ -68,7 +68,6 @@ const userHttpApp = UserHttpRoutes.pipe(HttpRouter.use(httpAuthMiddleware));
 // --- Replicache Handlers (defined explicitly) ---
 
 const pullHandler = Effect.gen(function* () {
-  // 1. Validate request body against the schema
   const body = yield* HttpServerRequest.schemaBodyJson(PullRequestSchema).pipe(
     Effect.catchAll((error) =>
       Effect.logWarning("Bad request: pull schema validation failed", {
@@ -85,33 +84,17 @@ const pullHandler = Effect.gen(function* () {
     ),
   );
 
-  // 2. Execute the core logic
   const result = yield* handlePull(body);
 
-  // 3. Validate and serialize the successful response
-  return yield* HttpServerResponse.schemaJson(PullResponseSchema)(result).pipe(
-    Effect.catchAll((error) =>
-      Effect.logError(
-        "CRITICAL: Pull handler produced data that failed its own response schema validation.",
-        { error },
-      ).pipe(
-        Effect.map(() =>
-          HttpServerResponse.unsafeJson(
-            { message: "Internal Server Error: response serialization failed" },
-            { status: 500 },
-          ),
-        ),
-      ),
-    ),
-  );
+  // ✅ THIS IS THE FIX: Revert to using schemaJson.
+  // This is now safe because `handlePull` returns a JSON-compatible object
+  // that will pass validation against the `PullResponseSchema`.
+  return yield* HttpServerResponse.schemaJson(PullResponseSchema)(result);
 }).pipe(
-  // 4. Catch any failures from the pipeline (e.g., from logic or validation)
   Effect.catchAll((error) => {
-    // If the error is already a response (like our 400), return it directly
     if (HttpServerResponse.isServerResponse(error)) {
       return Effect.succeed(error);
     }
-    // Otherwise, log the unexpected error and return a 500
     return Effect.logError("Error in pull handler logic", { error }).pipe(
       Effect.andThen(
         HttpServerResponse.json(
@@ -124,7 +107,6 @@ const pullHandler = Effect.gen(function* () {
 );
 
 const pushHandler = Effect.gen(function* () {
-  // 1. Validate request body against the schema
   const body = yield* HttpServerRequest.schemaBodyJson(PushRequestSchema).pipe(
     Effect.catchAll((error) =>
       Effect.logWarning("Bad request: push schema validation failed", {
@@ -141,19 +123,13 @@ const pushHandler = Effect.gen(function* () {
     ),
   );
 
-  // 2. Execute the core logic, providing its specific dependencies inline
   yield* handlePush(body).pipe(Effect.provide(AppServicesLive));
-
-  // 3. Return an empty JSON object for a successful response
   return HttpServerResponse.unsafeJson({});
 }).pipe(
-  // 4. Catch any failures from the pipeline
   Effect.catchAll((error) => {
-    // If the error is already a response, return it directly
     if (HttpServerResponse.isServerResponse(error)) {
       return Effect.succeed(error);
     }
-    // Otherwise, log the unexpected error and return a 500
     return Effect.logError("Error in push handler logic", { error }).pipe(
       Effect.andThen(
         HttpServerResponse.json(
@@ -165,8 +141,6 @@ const pushHandler = Effect.gen(function* () {
   }),
 );
 
-// The router definition logic remains sound. Handlers can have requirements
-// that are satisfied later when the server is built.
 const replicacheHttpApp = HttpRouter.empty.pipe(
   HttpRouter.post("/pull", pullHandler),
   HttpRouter.post("/push", pushHandler),

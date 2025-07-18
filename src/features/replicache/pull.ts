@@ -1,14 +1,12 @@
 // src/features/replicache/pull.ts
-import { Effect, Schema, Option } from "effect";
+import { Effect, Option } from "effect";
 import {
   type PullRequest,
   type PullResponse,
-  PullResponseSchema,
 } from "../../lib/shared/replicache-schemas";
 import { Db } from "../../db/DbTag";
 import { Auth, AuthError } from "../../lib/server/auth";
 import type { PublicUser } from "../../lib/shared/schemas";
-import { NoteSchema, BlockSchema } from "../../lib/shared/schemas";
 import type {
   ReplicacheClient,
   ReplicacheClientId,
@@ -35,13 +33,15 @@ const getOrCreateClientState = (
   user: PublicUser,
 ): Effect.Effect<ClientState> =>
   Effect.gen(function* (_) {
-    const groupID = user.id as unknown as ReplicacheClientGroupId;
+    // ✅ FIX: Use the clientGroupID from the request as the group's unique ID.
+    const groupID = clientGroupID as ReplicacheClientGroupId;
 
     const clientGroup = yield* _(
       Effect.promise(() =>
         trx
           .selectFrom("replicache_client_group")
           .selectAll()
+          // ✅ FIX: Look up the group using the correct ID.
           .where("id", "=", groupID)
           .executeTakeFirst(),
       ),
@@ -53,6 +53,7 @@ const getOrCreateClientState = (
               trx
                 .insertInto("replicache_client_group")
                 .values({
+                  // ✅ FIX: Insert using the correct ID.
                   id: groupID,
                   user_id: user.id,
                   cvr_version: "0",
@@ -83,6 +84,7 @@ const getOrCreateClientState = (
                 .insertInto("replicache_client")
                 .values({
                   id: clientID as ReplicacheClientId,
+                  // This is now correct, as clientGroup.id is the clientGroupID
                   client_group_id: clientGroup.id,
                   last_mutation_id: 0,
                 })
@@ -104,9 +106,9 @@ export const handlePull = (
     const { clientGroupID } = req;
     const fromVersion = req.cookie ?? 0;
 
-    // yield* _(
-    //   Effect.logInfo({ clientGroupID, fromVersion }, "Processing pull request"),
-    // );
+    yield* _(
+      Effect.logInfo({ clientGroupID, fromVersion }, "Processing pull request"),
+    );
 
     const db = yield* _(Db);
     const { user } = yield* _(Auth);
@@ -115,7 +117,7 @@ export const handlePull = (
       Effect.tryPromise({
         try: () =>
           db.transaction().execute(async (trx) => {
-            const { client, clientGroup } = await Effect.runPromise(
+            const { client } = await Effect.runPromise(
               getOrCreateClientState(trx, clientGroupID, user!),
             );
 
@@ -159,20 +161,47 @@ export const handlePull = (
 
             const patch: Array<PullResponse["patch"][number]> = [];
 
+            // --- THIS LOGIC IS NOW RESTORED ---
             for (const note of changedNotes) {
-              const parsedNote = Schema.decodeUnknownSync(NoteSchema)(note);
               patch.push({
                 op: "put",
                 key: `note/${note.id}`,
-                value: parsedNote,
+                value: {
+                  _tag: "note",
+                  id: note.id,
+                  user_id: note.user_id,
+                  title: note.title,
+                  content: note.content,
+                  version: note.version,
+                  created_at: note.created_at.toISOString(),
+                  updated_at: note.updated_at.toISOString(),
+                },
               });
             }
+
             for (const block of changedBlocks) {
-              const parsedBlock = Schema.decodeUnknownSync(BlockSchema)(block);
               patch.push({
                 op: "put",
                 key: `block/${block.id}`,
-                value: parsedBlock,
+                value: {
+                  _tag: "block",
+                  id: block.id,
+                  user_id: block.user_id,
+                  note_id: block.note_id,
+                  type: block.type,
+                  content: block.content,
+                  fields: JSON.parse(JSON.stringify(block.fields ?? {})),
+                  tags: block.tags,
+                  links: block.links,
+                  file_path: block.file_path,
+                  parent_id: block.parent_id,
+                  depth: block.depth,
+                  order: block.order,
+                  transclusions: block.transclusions,
+                  version: block.version,
+                  created_at: block.created_at.toISOString(),
+                  updated_at: block.updated_at.toISOString(),
+                },
               });
             }
 
@@ -207,16 +236,13 @@ export const handlePull = (
                 }
               }
             }
-
-            await trx
-              .updateTable("replicache_client_group")
-              .set({ cvr_version: nextCVR.id })
-              .where("id", "=", clientGroup.id)
-              .execute();
+            // --- END OF RESTORED LOGIC ---
 
             const response: PullResponse = {
               cookie: nextVersion,
-              lastMutationID: client.last_mutation_id,
+              lastMutationIDChanges: {
+                [client.id]: client.last_mutation_id,
+              },
               patch,
             };
             return response;
@@ -229,8 +255,6 @@ export const handlePull = (
           });
         },
       }),
-      // ✅ FIX: Use flatMap to handle the Either from decodeUnknown
-      Effect.flatMap(Schema.validate(PullResponseSchema)),
     );
 
     return pullResult;
