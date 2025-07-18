@@ -1,14 +1,10 @@
-// src/lib/shared/api.ts
+// FILE: ./src/lib/shared/api.ts
 import { Rpc, RpcGroup } from "@effect/rpc";
 import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
 import { AuthMiddleware, AuthError } from "./auth";
 
-import {
-  PullRequestSchema,
-  PullResponseSchema,
-  PushRequestSchema,
-} from "./replicache-schemas";
+// ⛔️ Replicache schemas are no longer part of the RPC API.
 
 export { AuthError };
 
@@ -52,7 +48,6 @@ const UnprotectedAuthRpc = RpcGroup.make(
     },
   }),
 
-  // ✅ ADDED: Endpoint to request a password reset email
   Rpc.make("requestPasswordReset", {
     success: Schema.Void,
     error: AuthError, // Generic error for unknown failures
@@ -61,7 +56,6 @@ const UnprotectedAuthRpc = RpcGroup.make(
     },
   }),
 
-  // ✅ ADDED: Endpoint to reset the password with a token
   Rpc.make("resetPassword", {
     success: Schema.Void,
     error: AuthError,
@@ -92,18 +86,5 @@ const ProtectedAuthRpc = RpcGroup.make(
   }),
 ).middleware(AuthMiddleware);
 
-export const ReplicacheRpc = RpcGroup.make(
-  Rpc.make("replicachePull", {
-    success: PullResponseSchema,
-    error: AuthError, // For simplicity, reuse AuthError for failures
-    payload: PullRequestSchema,
-  }),
-  Rpc.make("replicachePush", {
-    success: Schema.Void,
-    error: AuthError,
-    payload: PushRequestSchema,
-  }),
-).middleware(AuthMiddleware); // These routes MUST be protected
-
-// The final exported group merges them.
+// The final exported group merges only the auth-related RPCs.
 export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);

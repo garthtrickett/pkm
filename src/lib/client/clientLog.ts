@@ -8,7 +8,7 @@ const ProtocolLive = RpcClient.layerProtocolHttp({
   url: "/api/rpc",
 }).pipe(
   // Use the standard FetchHttpClient. It will be provided globally by ClientLive.
-  Layer.provide(RpcSerialization.layerNdjson),
+  Layer.provide(RpcSerialization.layerJson),
 );
 
 export class RpcLogClient extends Effect.Service<RpcLogClient>()(

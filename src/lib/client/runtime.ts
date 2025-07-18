@@ -1,5 +1,13 @@
-// src/lib/client/runtime.ts
-import { Cause, Effect, Exit, Layer, Runtime, Scope } from "effect";
+// FILE: ./src/lib/client/runtime.ts
+import {
+  Cause,
+  Effect,
+  Exit,
+  Layer,
+  Runtime,
+  Scope,
+  ExecutionStrategy,
+} from "effect";
 import { FetchHttpClient, HttpClient } from "@effect/platform";
 import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
@@ -9,29 +17,20 @@ import {
   RpcAuthClientLive,
   RpcLogClientLive,
   RpcLogClient,
-  RpcReplicacheClient,
-  RpcReplicacheClientLive,
 } from "./rpc";
 import { authState } from "./stores/authStore";
 import { ReplicacheLive, ReplicacheService } from "./replicache";
 
-// --- Service Definitions ---
-
-// --- Final Context and Layer ---
-
-// Define a context with only the services that are always available.
+// --- Context Definitions ---
 export type BaseClientContext =
   | LocationService
   | RpcLogClient
   | HttpClient.HttpClient
-  | RpcAuthClient
-  | RpcReplicacheClient;
+  | RpcAuthClient;
 
-// Define a full context that includes the authentication-dependent ReplicacheService.
 export type FullClientContext = BaseClientContext | ReplicacheService;
 
 // --- Layer Setup ---
-
 const RequestInitLive = Layer.succeed(FetchRequestInit, {
   credentials: "include",
 });
@@ -40,70 +39,98 @@ const CustomHttpClientLive = FetchHttpClient.layer.pipe(
   Layer.provide(RequestInitLive),
 );
 
-// Merge all RPC client layers.
-const rpcLayers = Layer.mergeAll(
-  RpcAuthClientLive,
-  RpcLogClientLive,
-  RpcReplicacheClientLive,
-);
-
-// Provide the HttpClient to the RPC layers.
+const rpcLayers = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
 const rpcAndHttpLayer = rpcLayers.pipe(
   Layer.provideMerge(CustomHttpClientLive),
 );
 
-// This is the static, base layer for all unauthenticated operations.
 export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
   LocationLive,
   rpcAndHttpLayer,
 );
 
 // --- Runtime Setup ---
-
 const appScope = Effect.runSync(Scope.make());
 
-// Create a single, static runtime from the base layer.
+let replicacheScope: Scope.CloseableScope | null = null;
+
 const AppRuntime = Effect.runSync(
   Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
+// ✅ FIX 2: Use a type assertion. This is safe because we gate access to the
+// full context via `runClientPromise`, which checks the auth state.
+export let clientRuntime: Runtime.Runtime<FullClientContext> =
+  AppRuntime as Runtime.Runtime<FullClientContext>;
 
-export const clientRuntime = AppRuntime;
+/**
+ * An effect to initialize the Replicache service and update the global runtime.
+ * This should be called ONLY when a user is authenticated.
+ */
+export const initializeReplicacheRuntime = Effect.gen(function* () {
+  const currentUser = authState.value.user;
+  if (!currentUser) {
+    return yield* Effect.die(
+      new Error("Cannot initialize Replicache without a user."),
+    );
+  }
+
+  if (replicacheScope) {
+    yield* Scope.close(replicacheScope, Exit.succeed(undefined));
+  }
+
+  // ✅ FIX 1: Correctly `yield*` the forked scope from the Effect.
+  const newScope = yield* Scope.fork(appScope, ExecutionStrategy.sequential);
+  replicacheScope = newScope;
+
+  const replicacheLayer = ReplicacheLive(currentUser);
+  const fullLayer = Layer.merge(BaseClientLive, replicacheLayer);
+  const newRuntime = yield* Scope.extend(Layer.toRuntime(fullLayer), newScope);
+
+  clientRuntime = newRuntime;
+  yield* clientLog(
+    "info",
+    "[runtime] Replicache runtime initialized and activated.",
+  );
+});
+
+/**
+ * An effect to shut down the Replicache service and revert the runtime.
+ * This should be called on logout.
+ */
+export const shutdownReplicacheRuntime = Effect.gen(function* () {
+  if (replicacheScope) {
+    yield* Scope.close(replicacheScope, Exit.succeed(undefined));
+    replicacheScope = null;
+    // Revert to the base runtime
+    clientRuntime = AppRuntime as Runtime.Runtime<FullClientContext>;
+    yield* clientLog("info", "[runtime] Replicache runtime shut down.");
+  }
+});
 
 // --- Effect Runners ---
-
-// This runner is for effects that require the full, authenticated context.
 export const runClientPromise = <A, E>(
   effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
-  const currentUser = authState.value.user;
-  if (!currentUser) {
+  if (authState.value.status !== "authenticated") {
     const error = new Error(
       "runClientPromise called without an authenticated user.",
     );
     console.error(error.message, { effect });
     return Promise.reject(error);
   }
-
-  // Provide the dynamic, user-specific Replicache layer to the effect before running.
-  const effectWithAuth = Effect.provide(effect, ReplicacheLive(currentUser));
-
-  // Run the enhanced effect using the base runtime.
-  return Runtime.runPromise(clientRuntime)(effectWithAuth);
+  return Runtime.runPromise(clientRuntime)(effect);
 };
 
-// This runner is for effects that only need the base, unauthenticated context.
 export const runClientUnscoped = <A, E>(
   effect: Effect.Effect<A, E, BaseClientContext>,
 ) => {
-  // The type of `effect` now correctly matches what `clientRuntime` can handle, so no assertion is needed.
   return Runtime.runFork(clientRuntime)(effect);
 };
 
 export const shutdownClient = () =>
   Effect.runPromise(Scope.close(appScope, Exit.succeed(undefined)));
 
-// --- Global Error Handling ---
-
+// --- Global Error Handling (unchanged) ---
 const setupGlobalErrorLogger = () => {
   const handler =
     (errorSource: string) => (event: ErrorEvent | PromiseRejectionEvent) => {
@@ -114,7 +141,6 @@ const setupGlobalErrorLogger = () => {
         ? Cause.squash(errorCandidate)
         : errorCandidate;
 
-      // This call is now type-safe.
       runClientUnscoped(
         clientLog(
           "error",
@@ -138,5 +164,4 @@ const setupGlobalErrorLogger = () => {
   );
 };
 
-// Initialize the global handler.
 setupGlobalErrorLogger();

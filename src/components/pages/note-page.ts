@@ -1,13 +1,10 @@
-// src/components/pages/note-page.ts
+// FILE: ./src/components/pages/note-page.ts
 import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
 import { Effect, Schema, Fiber, Duration } from "effect";
 import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
-import {
-  ReplicacheService,
-  type ReplicacheMutators,
-} from "../../lib/client/replicache";
+import { ReplicacheService } from "../../lib/client/replicache";
 import styles from "./NotePage.module.css";
 import {
   BlockSchema,
@@ -17,7 +14,8 @@ import {
   type NoteId,
 } from "../../lib/shared/schemas";
 import { clientLog } from "../../lib/client/clientLog";
-import { Replicache } from "replicache";
+import { authState, type AuthModel } from "../../lib/client/stores/authStore";
+import { ReplicacheLive } from "../../lib/client/replicache";
 
 type Status = "loading" | "idle" | "saving" | "error";
 
@@ -31,129 +29,64 @@ export class NotePage extends LitElement {
   @state() private _status: Status = "loading";
   @state() private _error: string | null = null;
 
-  private _rep: Replicache<ReplicacheMutators> | undefined;
-  private _unsubscribe: (() => void) | undefined;
-  private _saveFiber: Fiber.RuntimeFiber<void, Error> | undefined;
+  // ✅ FIX: Add a flag to prevent re-initialization.
+  @state() private _isInitialized = false;
 
-  constructor() {
-    super();
-    // Log when the element is first created in memory
-    runClientUnscoped(
-      clientLog(
-        "warn",
-        "-------------- [NotePage] CONSTRUCTOR CALLED --------------",
-      ),
-    );
-  }
+  private _replicacheUnsubscribe: (() => void) | undefined;
+  // ✅ FIX: Rename to be more specific.
+  private _authUnsubscribe: (() => void) | undefined;
+  private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
 
   private _initializeState() {
-    // Clean up any previous subscription to prevent memory leaks if the id changes
-    this._unsubscribe?.();
-
-    runClientUnscoped(
-      clientLog(
-        "warn",
-        `[NotePage] _initializeState called for id: '${this.id}'`,
-      ),
-    );
+    this._replicacheUnsubscribe?.();
 
     const setupEffect = Effect.gen(
       function* (this: NotePage) {
         if (!this.id) {
           this._status = "error";
           this._error = "Note ID is missing.";
-          yield* clientLog(
-            "error",
-            "[NotePage] Initialization failed: ID is missing.",
-          );
           return;
         }
-
         this._status = "loading";
         yield* clientLog("info", `[NotePage] Initializing with ID: ${this.id}`);
 
         const replicache = yield* ReplicacheService;
-        this._rep = replicache.client;
-
         const noteKey = `note/${this.id}`;
 
-        yield* clientLog(
-          "debug",
-          `[NotePage] Subscribing to Replicache for key: ${noteKey}`,
-        );
-
-        this._unsubscribe = this._rep.subscribe(
+        this._replicacheUnsubscribe = replicache.client.subscribe(
           async (tx) => {
             const note = await tx.get(noteKey);
             const allBlocks = await tx
               .scan({ prefix: "block/" })
               .values()
               .toArray();
-            // Log what the transaction finds directly
-            runClientUnscoped(
-              clientLog("warn", "[NotePage] Replicache query finished.", {
-                hasNote: !!note,
-                blockCount: allBlocks.length,
-              }),
-            );
             return { note, allBlocks };
           },
           (result) => {
-            runClientUnscoped(
-              clientLog(
-                "warn",
-                "[NotePage] Replicache onData callback fired.",
-                { hasNote: !!result.note },
-              ),
-            );
-
-            // ✅ FIX: This guard prevents Replicache from overwriting user input.
-            // If the user is actively typing, the status will be 'saving', and we should
-            // ignore incoming data because it might be stale.
-            if (this._status === "saving") {
-              runClientUnscoped(
-                clientLog(
-                  "warn",
-                  "[NotePage] Ignoring incoming Replicache data while in 'saving' state to prevent overwriting user input.",
-                ),
-              );
-              return;
-            }
+            if (this._status === "saving") return;
 
             if (!result.note) {
               this._status = "error";
-              this._error = "Note not found in Replicache cache.";
+              this._error = "Note not found.";
               return;
             }
+
             try {
               this._note = Schema.decodeUnknownSync(NoteSchema)(result.note);
               this._blocks = result.allBlocks
-                .flatMap((b) => {
-                  try {
-                    return [Schema.decodeUnknownSync(BlockSchema)(b)];
-                  } catch {
-                    return [];
-                  }
-                })
+                .flatMap((b) =>
+                  Schema.decodeUnknownOption(BlockSchema)(b).pipe((o) =>
+                    o._tag === "Some" ? [o.value] : [],
+                  ),
+                )
                 .filter((b) => b.note_id === this.id)
                 .sort((a, b) => a.order - b.order);
-
               this._status = "idle";
-              runClientUnscoped(
-                clientLog(
-                  "warn",
-                  "[NotePage] Successfully decoded note and blocks. Status set to IDLE.",
-                ),
-              );
             } catch (e) {
               this._status = "error";
               this._error = "Failed to parse note data.";
               runClientUnscoped(
-                clientLog(
-                  "error",
-                  "[NotePage] Failed to decode note or blocks",
-                  { error: e },
-                ),
+                clientLog("error", "Failed to decode data", { error: e }),
               );
             }
           },
@@ -164,49 +97,43 @@ export class NotePage extends LitElement {
     void runClientPromise(setupEffect);
   }
 
-  override updated(changedProperties: Map<string | number | symbol, unknown>) {
-    super.updated(changedProperties);
-    if (changedProperties.has("id")) {
-      runClientUnscoped(
-        clientLog(
-          "warn",
-          // ✅ FIX: Explicitly cast the 'unknown' value to a string.
-          `[NotePage] 'updated' lifecycle fired. ID changed from '${String(
-            changedProperties.get("id"),
-          )}' to: '${this.id}'`,
-        ),
-      );
-      if (this.id) {
-        // Only initialize if the new ID is not empty
-        this._initializeState();
-      }
-    }
-  }
-
+  // ✅ FIX: Implement a robust connectedCallback that subscribes to auth state.
   override connectedCallback() {
     super.connectedCallback();
-    runClientUnscoped(
-      clientLog(
-        "warn",
-        `[NotePage] connectedCallback fired. Current ID: '${this.id}'`,
-      ),
-    );
-    // It's possible the ID is not available yet, but `updated` will catch it if it changes.
-    this._initializeState();
+    const handleAuthChange = (auth: AuthModel) => {
+      if (auth.status === "authenticated" && !this._isInitialized) {
+        this._isInitialized = true;
+        this._initializeState();
+      } else if (auth.status !== "authenticated" && this._isInitialized) {
+        // Reset component state if user logs out
+        this._isInitialized = false;
+        this._replicacheUnsubscribe?.();
+        this._note = null;
+        this._status = "loading";
+      }
+    };
+
+    this._authUnsubscribe = authState.subscribe(handleAuthChange);
+    // Immediately check the current state upon connection
+    handleAuthChange(authState.value);
+  }
+
+  override updated(changedProperties: Map<string | number | symbol, unknown>) {
+    super.updated(changedProperties);
+    if (changedProperties.has("id") && this.id && this._isInitialized) {
+      // Re-initialize if the note ID changes and we are already authenticated
+      this._initializeState();
+    }
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this._unsubscribe?.();
+    this._replicacheUnsubscribe?.();
+    // ✅ FIX: Unsubscribe from the auth store to prevent memory leaks.
+    this._authUnsubscribe?.();
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
-    runClientUnscoped(
-      clientLog(
-        "warn",
-        `[NotePage] disconnectedCallback fired for ID: ${this.id}`,
-      ),
-    );
   }
 
   private _handleInput(update: Partial<Pick<Note, "title" | "content">>) {
@@ -216,32 +143,48 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
+
     const saveEffect = Effect.gen(
       function* (this: NotePage) {
         yield* Effect.sleep(Duration.millis(500));
-        if (!this._rep || !this._note) return;
-        yield* clientLog("info", `[NotePage] Saving note ${this.id}`);
+        const replicache = yield* ReplicacheService;
+        if (!this._note) return;
+
         yield* Effect.promise(() =>
-          this._rep!.mutate.updateNote({
+          replicache.client.mutate.updateNote({
             id: this.id as NoteId,
             title: this._note!.title,
             content: this._note!.content,
           }),
         );
-        this._status = "idle";
       }.bind(this),
     ).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          this._status = "idle";
+        }),
+      ),
       Effect.catchAll((err) => {
         this._status = "error";
         this._error = "Failed to save note.";
-        return clientLog(
-          "error",
-          `[NotePage] Save failed for note ${this.id}`,
-          err,
-        );
+        return clientLog("error", `Save failed for note ${this.id}`, err);
       }),
     );
-    this._saveFiber = runClientUnscoped(saveEffect);
+
+    const currentUser = authState.value.user;
+    if (!currentUser) {
+      this._status = "error";
+      this._error = "Cannot save: Not authenticated.";
+      runClientUnscoped(
+        clientLog("error", "[NotePage] Save failed: no authenticated user."),
+      );
+      return;
+    }
+
+    const replicacheLayer = ReplicacheLive(currentUser);
+    const runnableEffect = Effect.provide(saveEffect, replicacheLayer);
+
+    this._saveFiber = runClientUnscoped(runnableEffect);
   }
 
   protected override createRenderRoot() {

@@ -1,4 +1,4 @@
-// bun-server.ts
+// FILE: ./bun-server.ts
 import {
   HttpRouter,
   HttpServer,
@@ -23,36 +23,36 @@ import { ConfigLive } from "./src/lib/server/Config";
 import { PokeService, PokeServiceLive } from "./src/lib/server/PokeService";
 
 // RPC and Handler Imports
-import { AuthRpc, ReplicacheRpc } from "./src/lib/shared/api";
+import { AuthRpc } from "./src/lib/shared/api";
 import { UserRpcs } from "./src/user";
 import { RpcLog } from "./src/lib/shared/log-schema";
 import { AuthRpcHandlers } from "./src/features/auth/auth.handler";
 import { RpcUserHandlers } from "./src/user";
-import { ReplicacheHandlers } from "./src/features/replicache/replicache.handler";
 import { RpcLogHandlers } from "./src/features/log/log.handler";
 import { UserHttpRoutes } from "./src/features/user/user.http";
+// ✅ ADD: Import Replicache handlers and schemas directly
+import { handlePull } from "./src/features/replicache/pull";
+import { handlePush } from "./src/features/replicache/push";
+import {
+  PullRequestSchema,
+  PullResponseSchema,
+  PushRequestSchema,
+} from "./src/lib/shared/replicache-schemas";
 
 // --- Layer Definitions ---
-
-const mergedRpc = AuthRpc.merge(UserRpcs).merge(RpcLog).merge(ReplicacheRpc);
+const mergedRpc = AuthRpc.merge(UserRpcs).merge(RpcLog);
 const allRpcHandlers = {
   ...AuthRpcHandlers,
   ...RpcUserHandlers,
   ...RpcLogHandlers,
-  ...ReplicacheHandlers,
 };
 
-// The S3UploaderLive layer requires the Config service. We must
-// provide ConfigLive to it before merging it with other services.
 const s3LiveWithConfig = S3UploaderLive.pipe(Layer.provide(ConfigLive));
-
-// Now, we can merge all the application services. The result is a single
-// layer that has no outstanding requirements.
 const AppServicesLive = Layer.mergeAll(
   DbLayer,
   CryptoLive,
   PokeServiceLive,
-  s3LiveWithConfig, // Use the version that has its Config dependency satisfied
+  s3LiveWithConfig,
 );
 
 const RpcHandlersLive = mergedRpc.toLayer(allRpcHandlers);
@@ -67,30 +67,48 @@ const rpcApp = Effect.flatten(
 
 const userHttpApp = UserHttpRoutes.pipe(HttpRouter.use(httpAuthMiddleware));
 
+// ✅ ADD: A new, dedicated HTTP router for Replicache endpoints
+const replicacheHttpApp = HttpRouter.empty.pipe(
+  HttpRouter.post(
+    "/pull",
+    Effect.gen(function* () {
+      // ✅ FIX: `schemaBodyJson` is a static method on the module.
+      // It returns an Effect that accesses the request from the context.
+      const body = yield* HttpServerRequest.schemaBodyJson(PullRequestSchema);
+      const response = yield* handlePull(body);
+      return yield* HttpServerResponse.schemaJson(PullResponseSchema)(response);
+    }),
+  ),
+  HttpRouter.post(
+    "/push",
+    Effect.gen(function* () {
+      // ✅ FIX: Same correction as above.
+      const body = yield* HttpServerRequest.schemaBodyJson(PushRequestSchema);
+      yield* handlePush(body); // This effect returns void on success
+      return HttpServerResponse.empty(); // Return a 200 OK with no body
+    }),
+  ),
+  // All Replicache endpoints must be authenticated
+  HttpRouter.use(httpAuthMiddleware),
+);
+
 const wsHandler = Stream.fromEffect(
   Effect.gen(function* () {
     const pokeService = yield* PokeService;
     const req = yield* HttpServerRequest.HttpServerRequest;
-
-    // ✅ FIX: The `URL` constructor needs a base. The `req.url` is only a path.
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const sessionId = url.searchParams.get("sessionId");
-
     if (!sessionId) {
       return yield* Effect.fail(
         HttpServerResponse.text("No session ID", { status: 401 }),
       );
     }
-    // `validateSessionEffect` returns null if the session is invalid, it doesn't fail.
     const { user } = yield* validateSessionEffect(sessionId);
-
-    // We must check if the user was found.
     if (!user) {
       return yield* Effect.fail(
         HttpServerResponse.text("Invalid session", { status: 401 }),
       );
     }
-
     yield* Effect.logInfo(
       `WebSocket connection established for user: ${user.id}`,
     );
@@ -101,7 +119,6 @@ const wsHandler = Stream.fromEffect(
   Stream.pipeThroughChannel(HttpServerRequest.upgradeChannel()),
   Stream.runDrain,
   Effect.as(HttpServerResponse.empty()),
-  // This catch is still valuable for any other potential errors.
   Effect.catchAllCause((cause) => {
     const failure = Cause.failureOption(cause);
     if (
@@ -111,10 +128,8 @@ const wsHandler = Stream.fromEffect(
       return Effect.succeed(failure.value);
     }
     return Effect.logError(
-      "Unhandled WebSocket handler error. This is likely why the connection is closing.",
-      {
-        cause: Cause.pretty(cause),
-      },
+      "Unhandled WebSocket handler error.",
+      Cause.pretty(cause),
     ).pipe(Effect.andThen(HttpServerResponse.empty({ status: 500 })));
   }),
 );
@@ -124,23 +139,20 @@ const wsHandler = Stream.fromEffect(
 const appRouter = HttpRouter.empty.pipe(
   HttpRouter.mountApp("/api/rpc", rpcApp),
   HttpRouter.mountApp("/api/user", userHttpApp),
+  HttpRouter.mountApp("/api/replicache", replicacheHttpApp), // ✅ Mount the new router
   HttpRouter.get("/ws", wsHandler),
 );
 
 // --- Create and Launch the Final Server ---
 
-// The HttpServer.serve function returns a Layer. We compose it with
-// other layers using `Layer.provide`.
 const ServerLive = HttpServer.serve(appRouter).pipe(
   Layer.provide(AppServicesLive),
-  Layer.provide(RpcSerialization.layerNdjson),
+  Layer.provide(RpcSerialization.layerJson),
   Layer.provide(BunHttpServer.layer({ port: 42069 })),
 );
 
-// The final program is a layer that includes the server and observability.
 const program = ServerLive.pipe(Layer.provide(ObservabilityLive));
 
-// We use Layer.launch to build and run the final composed layer.
 const runnable = Layer.launch(program).pipe(
   Effect.catchAllCause((cause) =>
     Effect.logFatal("Server failed to launch", cause),

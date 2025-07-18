@@ -1,29 +1,28 @@
-// src/components/pages/notes-page.ts
+// FILE: ./src/components/pages/notes-page.ts
 import { LitElement, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
 import { Effect, Schema } from "effect";
 import { runClientUnscoped, runClientPromise } from "../../lib/client/runtime";
-import {
-  ReplicacheService,
-  type ReplicacheMutators,
-} from "../../lib/client/replicache";
-import { authState } from "../../lib/client/stores/authStore";
+import { ReplicacheService } from "../../lib/client/replicache";
+import { authState, type AuthModel } from "../../lib/client/stores/authStore";
 import { navigate } from "../../lib/client/router";
 import { NotionButton } from "../ui/notion-button";
 import styles from "./NotesView.module.css";
 import { NoteSchema, type Note, type NoteId } from "../../lib/shared/schemas";
 import { clientLog } from "../../lib/client/clientLog";
-import { Replicache } from "replicache";
 import { v4 as uuidv4 } from "uuid";
 
 @customElement("notes-page")
 export class NotesPage extends LitElement {
   @state() private _notes: Note[] = [];
   @state() private _isCreating = false;
+  // ✅ FIX: Add a flag to prevent re-initialization.
+  @state() private _isInitialized = false;
 
-  private _rep: Replicache<ReplicacheMutators> | undefined;
-  private _unsubscribe: (() => void) | undefined;
+  private _replicacheUnsubscribe: (() => void) | undefined;
+  // ✅ FIX: Add a dedicated unsubscribe for the auth state.
+  private _authUnsubscribe: (() => void) | undefined;
 
   private readonly _connectedEffect = Effect.gen(
     function* (this: NotesPage) {
@@ -32,26 +31,17 @@ export class NotesPage extends LitElement {
         "[NotesPage] Component connected, initializing.",
       );
       const replicache = yield* ReplicacheService;
-      this._rep = replicache.client;
-      this._unsubscribe = this._rep.subscribe(
+      this._replicacheUnsubscribe = replicache.client.subscribe(
         async (tx) => {
           const noteJSONs = await tx
             .scan({ prefix: "note/" })
             .values()
             .toArray();
-          const notes = noteJSONs.flatMap((json) => {
-            try {
-              return [Schema.decodeUnknownSync(NoteSchema)(json)];
-            } catch (e) {
-              runClientUnscoped(
-                clientLog("warn", "[NotesPage] Failed to decode note.", {
-                  error: e,
-                }),
-              );
-              return [];
-            }
-          });
-          return notes;
+          return noteJSONs.flatMap((json) =>
+            Schema.decodeUnknownOption(NoteSchema)(json).pipe((o) =>
+              o._tag === "Some" ? [o.value] : [],
+            ),
+          );
         },
         (notes: Note[]) => {
           this._notes = notes.sort(
@@ -64,70 +54,75 @@ export class NotesPage extends LitElement {
     }.bind(this),
   );
 
+  // ✅ FIX: Replace the racy connectedCallback with a robust subscription.
   override connectedCallback() {
     super.connectedCallback();
-    if (authState.value.status === "authenticated") {
-      void runClientPromise(this._connectedEffect);
-    }
+
+    const handleAuthChange = (auth: AuthModel) => {
+      // Only initialize if we are authenticated and haven't already.
+      if (auth.status === "authenticated" && !this._isInitialized) {
+        this._isInitialized = true;
+        void runClientPromise(this._connectedEffect);
+      }
+      // If the user logs out, reset the component's state.
+      else if (auth.status !== "authenticated" && this._isInitialized) {
+        this._isInitialized = false;
+        this._replicacheUnsubscribe?.();
+        this._notes = [];
+      }
+    };
+
+    // Subscribe to the auth state and immediately run the handler.
+    this._authUnsubscribe = authState.subscribe(handleAuthChange);
+    handleAuthChange(authState.value);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this._unsubscribe?.();
+    this._replicacheUnsubscribe?.();
+    // ✅ FIX: Unsubscribe from the auth store on disconnect.
+    this._authUnsubscribe?.();
     runClientUnscoped(clientLog("info", "[NotesPage] Component disconnected."));
   }
 
-  // ✅ ADDED: Delete note handler
   private _deleteNote(noteId: NoteId) {
-    const deleteEffect = Effect.gen(
-      function* (this: NotesPage) {
-        if (!this._rep) {
-          return yield* Effect.logError("Replicache not available for delete.");
-        }
-        yield* Effect.promise(() =>
-          this._rep!.mutate.deleteNote({ id: noteId }),
-        );
-      }.bind(this),
-    );
-
+    const deleteEffect = Effect.gen(function* () {
+      const replicache = yield* ReplicacheService;
+      yield* Effect.promise(() =>
+        replicache.client.mutate.deleteNote({ id: noteId }),
+      );
+    });
     void runClientPromise(deleteEffect);
   }
 
   private _createNewNote() {
     this._isCreating = true;
-    const createEffect = Effect.gen(
-      function* (this: NotesPage) {
-        if (!this._rep) {
-          return yield* Effect.logError(
-            "Replicache not available for mutation.",
-          );
-        }
-        const user = authState.value.user;
-        if (!user) {
-          return yield* Effect.logError("Cannot create note without user.");
-        }
-        const newNoteId = uuidv4() as NoteId;
-        const newNoteJSON = yield* Effect.promise(() =>
-          this._rep!.mutate.createNote({
-            id: newNoteId,
-            userID: user.id,
-            title: "Untitled Note",
-          }),
-        );
-        const newNote = yield* Schema.decodeUnknown(NoteSchema)(newNoteJSON);
-        this._isCreating = false;
-        return yield* navigate(`/notes/${newNote.id}`);
-      }.bind(this),
-    );
+    const createEffect = Effect.gen(function* () {
+      const replicache = yield* ReplicacheService;
+      const user = authState.value.user!;
+      const newNoteId = uuidv4() as NoteId;
+      yield* Effect.promise(() =>
+        replicache.client.mutate.createNote({
+          id: newNoteId,
+          userID: user.id,
+          title: "Untitled Note",
+        }),
+      );
+      return yield* navigate(`/notes/${newNoteId}`);
+    });
+
     const finalEffect = createEffect.pipe(
-      Effect.catchAll((err) => {
-        this._isCreating = false;
-        return clientLog("error", "[NotesPage] Failed to create note", err);
-      }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          this._isCreating = false;
+        }),
+      ),
+      Effect.catchAll((err) =>
+        clientLog("error", "[NotesPage] Failed to create note", err),
+      ),
     );
     void runClientPromise(finalEffect);
   }
-
   override render() {
     return html`
       <div class=${styles.container}>
@@ -169,7 +164,6 @@ export class NotesPage extends LitElement {
                           : "No additional content"}
                       </p>
                     </a>
-                    <!-- ✅ ADDED: Delete button -->
                     <button
                       @click=${() => this._deleteNote(note.id)}
                       class="absolute top-3 right-3 z-10 hidden rounded-full bg-white p-1.5 text-zinc-500 shadow-sm transition-all group-hover:block hover:bg-red-50 hover:text-red-600"

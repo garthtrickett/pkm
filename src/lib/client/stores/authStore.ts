@@ -1,11 +1,15 @@
-// src/lib/client/stores/authStore.ts
+// FILE: ./src/lib/client/stores/authStore.ts
 import { signal } from "@preact/signals-core";
 import { Data, Effect, Layer, Queue, Stream } from "effect";
 import type { PublicUser } from "../../shared/schemas";
-import { runClientUnscoped } from "../runtime";
+// ✅ FIX: Import the new runtime functions
+import {
+  runClientUnscoped,
+  initializeReplicacheRuntime,
+  shutdownReplicacheRuntime,
+} from "../runtime";
 import { AuthError } from "../../shared/api";
 import { clientLog } from "../clientLog";
-// The `ClientLive` import is no longer needed and should be removed.
 import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "../rpc";
 
 // --- Model & State ---
@@ -83,28 +87,13 @@ const handleAuthAction = (
 
     switch (action.type) {
       case "AUTH_CHECK_START": {
-        yield* clientLog(
-          "info",
-          "[authStore] Awaiting RPC call: authClient.me()",
-        );
-
         const result = yield* Effect.either(authClient.me());
-
         if (result._tag === "Right") {
-          yield* clientLog(
-            "info",
-            "[authStore] RPC 'me' succeeded. Proposing AUTH_CHECK_SUCCESS.",
-          );
           proposeAuthAction({
             type: "AUTH_CHECK_SUCCESS",
             payload: result.right,
           });
         } else {
-          yield* clientLog(
-            "warn",
-            "[authStore] RPC 'me' failed. Proposing AUTH_CHECK_FAILURE.",
-            { error: result.left },
-          );
           proposeAuthAction({
             type: "AUTH_CHECK_FAILURE",
             payload: result.left,
@@ -112,30 +101,27 @@ const handleAuthAction = (
         }
         break;
       }
-
+      // ✅ FIX: When auth succeeds, initialize the Replicache runtime
+      case "AUTH_CHECK_SUCCESS":
+      case "SET_AUTHENTICATED": {
+        yield* initializeReplicacheRuntime;
+        break;
+      }
+      // ✅ FIX: When auth fails, shut down the Replicache runtime
+      case "AUTH_CHECK_FAILURE": {
+        yield* shutdownReplicacheRuntime;
+        break;
+      }
       case "LOGOUT_START": {
-        yield* clientLog(
-          "info",
-          "[authStore] Awaiting RPC call: authClient.logout()",
-        );
         yield* Effect.either(authClient.logout());
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
       }
-
       case "LOGOUT_SUCCESS": {
         document.cookie =
           "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-        yield* clientLog("info", "[authStore] Client session cookie cleared.");
-        break;
-      }
-
-      case "SET_AUTHENTICATED": {
-        yield* clientLog(
-          "info",
-          "[authStore] Successfully set user as authenticated.",
-          { userId: action.payload.id },
-        );
+        // ✅ FIX: Shut down replicache runtime on logout
+        yield* shutdownReplicacheRuntime;
         break;
       }
     }
@@ -150,7 +136,7 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
       Effect.catchAll((err) =>
         clientLog(
           "error",
-          `[authStore] Unhandled error in action handler for "${action.type}"`,
+          `[authStore] Unhandled error for action "${action.type}"`,
           err,
         ),
       ),
@@ -160,10 +146,5 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
 runClientUnscoped(
   clientLog("info", "[authStore] Starting main auth processing stream..."),
 );
-
-// This is the corrected line.
-// The `authProcess` effect requires services that `runClientUnscoped` can already provide.
 runClientUnscoped(authProcess);
-
-// Initial action to kick things off
 proposeAuthAction({ type: "AUTH_CHECK_START" });
