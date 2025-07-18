@@ -20,7 +20,6 @@ import {
 } from "./rpc";
 import { authState } from "./stores/authStore";
 import { ReplicacheLive, ReplicacheService } from "./replicache";
-// ✅ ADD: Import PublicUser type
 import type { PublicUser } from "../shared/schemas";
 
 // --- Context Definitions ---
@@ -29,14 +28,12 @@ export type BaseClientContext =
   | RpcLogClient
   | HttpClient.HttpClient
   | RpcAuthClient;
-
 export type FullClientContext = BaseClientContext | ReplicacheService;
 
 // --- Layer Setup ---
 const RequestInitLive = Layer.succeed(FetchRequestInit, {
   credentials: "include",
 });
-
 const CustomHttpClientLive = FetchHttpClient.layer.pipe(
   Layer.provide(RequestInitLive),
 );
@@ -45,7 +42,6 @@ const rpcLayers = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
 const rpcAndHttpLayer = rpcLayers.pipe(
   Layer.provideMerge(CustomHttpClientLive),
 );
-
 export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
   LocationLive,
   rpcAndHttpLayer,
@@ -53,13 +49,11 @@ export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
 
 // --- Runtime Setup ---
 const appScope = Effect.runSync(Scope.make());
-
 let replicacheScope: Scope.CloseableScope | null = null;
 
 const AppRuntime = Effect.runSync(
   Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
-
 export let clientRuntime: Runtime.Runtime<FullClientContext> =
   AppRuntime as Runtime.Runtime<FullClientContext>;
 
@@ -67,7 +61,6 @@ export let clientRuntime: Runtime.Runtime<FullClientContext> =
  * An effect to initialize the Replicache service and update the global runtime.
  * This should be called ONLY when a user is authenticated.
  */
-// ✅ FIX: Accept the user as an argument to avoid depending on global state.
 export const initializeReplicacheRuntime = (user: PublicUser) =>
   Effect.gen(function* () {
     if (replicacheScope) {
@@ -77,7 +70,6 @@ export const initializeReplicacheRuntime = (user: PublicUser) =>
     const newScope = yield* Scope.fork(appScope, ExecutionStrategy.sequential);
     replicacheScope = newScope;
 
-    // ✅ FIX: Use the user argument to create the layer.
     const replicacheLayer = ReplicacheLive(user);
     const fullLayer = Layer.merge(BaseClientLive, replicacheLayer);
     const newRuntime = yield* Scope.extend(
@@ -120,8 +112,10 @@ export const runClientPromise = <A, E>(
   return Runtime.runPromise(clientRuntime)(effect);
 };
 
+// ✅ FIX: The context type is updated to FullClientContext.
+// This allows the runner to correctly execute effects that depend on the ReplicacheService.
 export const runClientUnscoped = <A, E>(
-  effect: Effect.Effect<A, E, BaseClientContext>,
+  effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
   return Runtime.runFork(clientRuntime)(effect);
 };
@@ -139,7 +133,6 @@ const setupGlobalErrorLogger = () => {
       const error = Cause.isCause(errorCandidate)
         ? Cause.squash(errorCandidate)
         : errorCandidate;
-
       runClientUnscoped(
         clientLog(
           "error",

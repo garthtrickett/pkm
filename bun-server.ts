@@ -35,7 +35,7 @@ import { handlePush } from "./src/features/replicache/push";
 import {
   PullRequestSchema,
   PushRequestSchema,
-  PullResponseSchema, // ✅ Import the response schema
+  PullResponseSchema,
 } from "./src/lib/shared/replicache-schemas";
 
 // --- Layer Definitions ---
@@ -120,7 +120,10 @@ const pushHandler = Effect.gen(function* () {
     ),
   );
 
-  yield* handlePush(body).pipe(Effect.provide(AppServicesLive));
+  // ✅ FIX: The per-request .provide() call has been removed.
+  // The effect now correctly uses the singleton services from the global application layer.
+  yield* handlePush(body);
+
   return HttpServerResponse.unsafeJson({});
 }).pipe(
   Effect.catchAll((error) => {

@@ -15,7 +15,6 @@ import {
 } from "../../lib/shared/schemas";
 import { clientLog } from "../../lib/client/clientLog";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
-import { ReplicacheLive } from "../../lib/client/replicache";
 
 type Status = "loading" | "idle" | "saving" | "error";
 
@@ -28,18 +27,14 @@ export class NotePage extends LitElement {
   @state() private _blocks: Block[] = [];
   @state() private _status: Status = "loading";
   @state() private _error: string | null = null;
-
-  // ✅ FIX: Add a flag to prevent re-initialization.
   @state() private _isInitialized = false;
 
   private _replicacheUnsubscribe: (() => void) | undefined;
-  // ✅ FIX: Rename to be more specific.
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
 
   private _initializeState() {
     this._replicacheUnsubscribe?.();
-
     const setupEffect = Effect.gen(
       function* (this: NotePage) {
         if (!this.id) {
@@ -97,7 +92,6 @@ export class NotePage extends LitElement {
     void runClientPromise(setupEffect);
   }
 
-  // ✅ FIX: Implement a robust connectedCallback that subscribes to auth state.
   override connectedCallback() {
     super.connectedCallback();
     const handleAuthChange = (auth: AuthModel) => {
@@ -129,7 +123,6 @@ export class NotePage extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._replicacheUnsubscribe?.();
-    // ✅ FIX: Unsubscribe from the auth store to prevent memory leaks.
     this._authUnsubscribe?.();
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
@@ -171,20 +164,9 @@ export class NotePage extends LitElement {
       }),
     );
 
-    const currentUser = authState.value.user;
-    if (!currentUser) {
-      this._status = "error";
-      this._error = "Cannot save: Not authenticated.";
-      runClientUnscoped(
-        clientLog("error", "[NotePage] Save failed: no authenticated user."),
-      );
-      return;
-    }
-
-    const replicacheLayer = ReplicacheLive(currentUser);
-    const runnableEffect = Effect.provide(saveEffect, replicacheLayer);
-
-    this._saveFiber = runClientUnscoped(runnableEffect);
+    // ✅ FIX: This now correctly uses the singleton Replicache instance provided by the global runtime,
+    // as `runClientUnscoped` is now correctly typed to handle effects requiring `ReplicacheService`.
+    this._saveFiber = runClientUnscoped(saveEffect);
   }
 
   protected override createRenderRoot() {
@@ -209,7 +191,6 @@ export class NotePage extends LitElement {
       if (this._status === "error") return "Error saving";
       return "Saved";
     };
-
     return html`
       <div class=${styles.container}>
         <div class=${styles.editor}>
