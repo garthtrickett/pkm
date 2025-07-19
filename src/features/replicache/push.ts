@@ -7,6 +7,7 @@ import { Auth, AuthError } from "../../lib/server/auth";
 import { NoteIdSchema, UserIdSchema } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import type { ReplicacheClientId } from "../../types/generated/public/ReplicacheClient";
+import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
 import { Database } from "../../types";
 import { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
@@ -119,47 +120,68 @@ export const handlePush = (
     yield* _(
       Effect.logInfo(
         { clientGroupID, mutationCount: mutations.length },
-        "Processing push request",
+        "Processing V1 push request",
       ),
     );
 
     const transactionEffect = Effect.tryPromise({
       try: () =>
         db.transaction().execute(async (trx) => {
-          const clientID = `${clientGroupID}-${user!.id}`;
-          const clientState = await trx
-            .selectFrom("replicache_client")
-            .selectAll()
-            .where("id", "=", clientID as ReplicacheClientId)
-            .forUpdate()
-            .executeTakeFirst();
-          if (!clientState) {
-            throw new Error(`Client state not found for id: ${clientID}`);
-          }
           for (const mutation of mutations) {
-            const expectedMutationID = clientState.last_mutation_id + 1;
-            if (mutation.id < expectedMutationID) {
-              continue;
+            const { clientID, id: mutationID } = mutation;
+
+            // ✅ FIX: Implement "get or create" logic for the client state.
+            let clientState = await trx
+              .selectFrom("replicache_client")
+              .selectAll()
+              .where("id", "=", clientID as ReplicacheClientId)
+              .forUpdate()
+              .executeTakeFirst();
+
+            // If the client doesn't exist, create it.
+            if (!clientState) {
+              await trx
+                .insertInto("replicache_client")
+                .values({
+                  id: clientID as ReplicacheClientId,
+                  client_group_id: clientGroupID as ReplicacheClientGroupId, // Use clientGroupID from the request
+                  last_mutation_id: 0,
+                  updated_at: new Date(),
+                })
+                .execute();
+              // Re-fetch the newly created state to ensure we have it.
+              clientState = await trx
+                .selectFrom("replicache_client")
+                .selectAll()
+                .where("id", "=", clientID as ReplicacheClientId)
+                .forUpdate()
+                .executeTakeFirstOrThrow();
             }
-            if (mutation.id > expectedMutationID) {
+
+            const expectedMutationID = clientState.last_mutation_id + 1;
+
+            if (mutationID < expectedMutationID) {
+              continue; // Already processed
+            }
+            if (mutationID > expectedMutationID) {
               throw new Error(
-                `Mutation ${mutation.id} out of order; expected ${expectedMutationID}`,
+                `Mutation ${mutationID} out of order for client ${clientID}; expected ${expectedMutationID}`,
               );
             }
-            const mutationEffect = applyMutation(mutation);
+
             await Effect.runPromise(
-              mutationEffect.pipe(
+              applyMutation(mutation).pipe(
                 Effect.provideService(Db, trx as Kysely<Database>),
                 Effect.provideService(Auth, { user: user!, session: null }),
               ),
             );
-            clientState.last_mutation_id = mutation.id;
+
+            await trx
+              .updateTable("replicache_client")
+              .set({ last_mutation_id: mutationID })
+              .where("id", "=", clientID as ReplicacheClientId)
+              .execute();
           }
-          await trx
-            .updateTable("replicache_client")
-            .set({ last_mutation_id: clientState.last_mutation_id })
-            .where("id", "=", clientID as ReplicacheClientId)
-            .execute();
         }),
       catch: (cause) =>
         new AuthError({
@@ -169,9 +191,6 @@ export const handlePush = (
         }),
     });
 
-    // Let the transaction run. If it fails, the error will be caught by the HTTP handler.
     yield* transactionEffect;
-
-    // This code only runs if the transaction was successful.
     yield* pokeService.poke(user!.id);
   });

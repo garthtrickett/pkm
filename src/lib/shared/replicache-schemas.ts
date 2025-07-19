@@ -6,7 +6,6 @@ import { NoteIdSchema, UserIdSchema, BlockIdSchema } from "./schemas";
 export const PullRequestSchema = Schema.Struct({
   clientGroupID: Schema.String,
   cookie: Schema.Union(Schema.Number, Schema.Null),
-  schemaVersion: Schema.String,
 });
 export type PullRequest = Schema.Schema.Type<typeof PullRequestSchema>;
 
@@ -63,8 +62,6 @@ export const PullResponseSchema = Schema.Struct({
     key: Schema.String,
     value: Schema.Number,
   }),
-  // ✅ THIS IS THE FIX ✅
-  // Wrap the Schema.Array in Schema.mutable to produce a mutable array type.
   patch: Schema.mutable(Schema.Array(PatchOperationSchema)),
 });
 export type PullResponse = Schema.Schema.Type<typeof PullResponseSchema>;
@@ -73,10 +70,13 @@ const MutationSchema = Schema.Struct({
   id: Schema.Number,
   name: Schema.String,
   args: Schema.Any,
+  // ✅ FIX: Add clientID to each mutation, as per the V1 protocol.
+  clientID: Schema.String,
 });
 
 export const PushRequestSchema = Schema.Struct({
   clientGroupID: Schema.String,
   mutations: Schema.Array(MutationSchema),
 });
+
 export type PushRequest = Schema.Schema.Type<typeof PushRequestSchema>;

@@ -4,7 +4,6 @@ import {
   type ReadonlyJSONValue,
   type WriteTransaction,
   type Puller,
-  type PullRequest,
   type HTTPRequestInfo,
   // ✅ Import the specific V1 result type
   type PullerResultV1,
@@ -12,9 +11,10 @@ import {
 import { Context, Layer, Effect, Schema } from "effect";
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
-import { PullResponseSchema } from "../shared/replicache-schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import { runClientUnscoped } from "./runtime";
+import { PullRequestV1 } from "replicache";
+import { PullResponseSchema } from "../shared/replicache-schemas";
 
 // --- Mutators (unchanged) ---
 const mutators = {
@@ -78,16 +78,26 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
 
 // ✅ FIX: Define the puller with a specific V1 return type, then cast it.
 const debugPuller: Puller = (async (
-  request: PullRequest,
+  request: PullRequestV1,
 ): Promise<PullerResultV1> => {
   try {
+    const body = {
+      clientGroupID: request.clientGroupID,
+      cookie: request.cookie,
+      schemaVersion: request.schemaVersion,
+      // The `request` object has `clientID` at runtime, but not in its type.
+      // We add it to the body object that gets sent to the server.
+      clientID: (request as unknown as { clientID: string }).clientID,
+    };
+
     const response = await fetch("/api/replicache/pull", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
+      body: JSON.stringify(body),
     });
 
     const responseText = await response.text();
+
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: response.status,
       errorMessage: response.ok ? "" : responseText,

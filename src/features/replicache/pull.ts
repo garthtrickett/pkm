@@ -1,102 +1,14 @@
 // src/features/replicache/pull.ts
-import { Effect, Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import {
   type PullRequest,
   type PullResponse,
 } from "../../lib/shared/replicache-schemas";
 import { Db } from "../../db/DbTag";
 import { Auth, AuthError } from "../../lib/server/auth";
-import {
-  BlockIdSchema,
-  NoteIdSchema,
-  type PublicUser,
-} from "../../lib/shared/schemas";
-import type {
-  ReplicacheClient,
-  ReplicacheClientId,
-} from "../../types/generated/public/ReplicacheClient";
-import type {
-  ReplicacheClientGroupId,
-  ReplicacheClientGroup,
-} from "../../types/generated/public/ReplicacheClientGroup";
+import { BlockIdSchema, NoteIdSchema } from "../../lib/shared/schemas";
+import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
 import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
-import { type Transaction } from "kysely";
-import type { Database } from "../../types";
-
-type ClientState = {
-  client: ReplicacheClient;
-  clientGroup: ReplicacheClientGroup;
-};
-
-// Helper to get or create client group and client state within a transaction
-const getOrCreateClientState = (
-  trx: Transaction<Database>,
-  clientGroupID: string,
-  user: PublicUser,
-): Effect.Effect<ClientState> =>
-  Effect.gen(function* (_) {
-    const groupID = clientGroupID as ReplicacheClientGroupId;
-
-    const clientGroup = yield* _(
-      Effect.promise(() =>
-        trx
-          .selectFrom("replicache_client_group")
-          .selectAll()
-          .where("id", "=", groupID)
-          .executeTakeFirst(),
-      ),
-      Effect.map(Option.fromNullable),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.promise(() =>
-              trx
-                .insertInto("replicache_client_group")
-                .values({
-                  id: groupID,
-                  user_id: user.id,
-                  // ✅ FIX: cvr_version is a number, not a string.
-                  cvr_version: 0,
-                })
-                .returningAll()
-                .executeTakeFirstOrThrow(),
-            ),
-          onSome: Effect.succeed,
-        }),
-      ),
-    );
-
-    const clientID = `${clientGroupID}-${user.id}`;
-    const client = yield* _(
-      Effect.promise(() =>
-        trx
-          .selectFrom("replicache_client")
-          .selectAll()
-          .where("id", "=", clientID as ReplicacheClientId)
-          .executeTakeFirst(),
-      ),
-      Effect.map(Option.fromNullable),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.promise(() =>
-              trx
-                .insertInto("replicache_client")
-                .values({
-                  id: clientID as ReplicacheClientId,
-                  client_group_id: clientGroup.id,
-                  last_mutation_id: 0,
-                })
-                .returningAll()
-                .executeTakeFirstOrThrow(),
-            ),
-          onSome: Effect.succeed,
-        }),
-      ),
-    );
-
-    return { client, clientGroup };
-  });
 
 export const handlePull = (
   req: PullRequest,
@@ -116,21 +28,35 @@ export const handlePull = (
       Effect.tryPromise({
         try: () =>
           db.transaction().execute(async (trx) => {
-            const { client } = await Effect.runPromise(
-              getOrCreateClientState(trx, clientGroupID, user!),
+            // Fetch all clients for the group to build the lastMutationIDChanges map.
+            const clients = await trx
+              .selectFrom("replicache_client")
+              .selectAll()
+              .where(
+                "client_group_id",
+                "=",
+                clientGroupID as ReplicacheClientGroupId,
+              )
+              .execute();
+
+            const lastMutationIDChanges = Object.fromEntries(
+              clients.map((c) => [c.id, c.last_mutation_id]),
             );
 
+            // Get a snapshot of all current entities for the user.
             const allNotes = await trx
               .selectFrom("note")
               .selectAll()
               .where("user_id", "=", user!.id)
               .execute();
+
             const allBlocks = await trx
               .selectFrom("block")
               .selectAll()
               .where("user_id", "=", user!.id)
               .execute();
 
+            // Create a new Client View Record (CVR) for this sync and get its version (ID).
             const nextCVR = await trx
               .insertInto("client_view_record")
               .values({
@@ -145,12 +71,14 @@ export const handlePull = (
 
             const nextVersion = Number(nextCVR.id);
 
+            // Find all entities that have changed since the client's last pull.
             const changedNotes = await trx
               .selectFrom("note")
               .selectAll()
               .where("user_id", "=", user!.id)
               .where("version", ">", fromVersion)
               .execute();
+
             const changedBlocks = await trx
               .selectFrom("block")
               .selectAll()
@@ -160,6 +88,7 @@ export const handlePull = (
 
             const patch: Array<PullResponse["patch"][number]> = [];
 
+            // Add new or updated notes to the patch.
             for (const note of changedNotes) {
               patch.push({
                 op: "put",
@@ -177,6 +106,7 @@ export const handlePull = (
               });
             }
 
+            // Add new or updated blocks to the patch.
             for (const block of changedBlocks) {
               patch.push({
                 op: "put",
@@ -203,11 +133,11 @@ export const handlePull = (
               });
             }
 
+            // Calculate deletions if the client is not syncing for the first time.
             if (fromVersion > 0) {
               const prevCVR = await trx
                 .selectFrom("client_view_record")
                 .select("data")
-                // ✅ FIX: Do not convert `fromVersion` to a string.
                 .where("id", "=", fromVersion as ClientViewRecordId)
                 .where("user_id", "=", user!.id)
                 .executeTakeFirst();
@@ -241,9 +171,7 @@ export const handlePull = (
 
             const response: PullResponse = {
               cookie: nextVersion,
-              lastMutationIDChanges: {
-                [client.id]: client.last_mutation_id,
-              },
+              lastMutationIDChanges,
               patch,
             };
             return response;
