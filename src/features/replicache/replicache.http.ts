@@ -30,7 +30,7 @@ const pullHandlerLogic = Effect.gen(function* () {
 const pushHandlerLogic = Effect.gen(function* () {
   const body = yield* HttpServerRequest.schemaBodyJson(PushRequestSchema);
   yield* handlePush(body);
-  return HttpServerResponse.empty();
+  return yield* HttpServerResponse.json({});
 });
 
 // --- Helper type guards for specific error types ---

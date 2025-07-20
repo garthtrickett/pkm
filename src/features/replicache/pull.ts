@@ -24,6 +24,25 @@ const pullLogicEffect = (
   user: User,
 ): Effect.Effect<PullResponse, PullDatabaseError> =>
   Effect.gen(function* () {
+    // ✅ --- THIS IS THE FIX ---
+    // Ensure the client group exists before proceeding.
+    // Using `onConflict...doNothing()` makes this an atomic "upsert".
+    yield* Effect.tryPromise({
+      try: () =>
+        trx
+          .insertInto("replicache_client_group")
+          .values({
+            id: req.clientGroupID as ReplicacheClientGroupId,
+            user_id: user.id,
+            cvr_version: 0, // A new group always starts at version 0
+            updated_at: new Date(),
+          })
+          .onConflict((oc) => oc.column("id").doNothing())
+          .execute(),
+      catch: (cause) => new PullDatabaseError({ cause }),
+    });
+    // ✅ --- END OF FIX ---
+
     const fromVersion = req.cookie ?? 0;
 
     // 1. Get last mutation IDs for all clients in the group.

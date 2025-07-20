@@ -34,5 +34,3 @@ export class RpcLogClient extends Effect.Service<RpcLogClient>()(
 ) {}
 
 export const RpcLogClientLive = RpcLogClient.Default;
-
-// ⛔️ DELETE THE Replicache RPC Client section. It's no longer an RPC client.

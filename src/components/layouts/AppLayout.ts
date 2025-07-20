@@ -16,7 +16,6 @@ export const AppLayout = ({ children, auth }: Props): TemplateResult => {
   const handleLogout = (e: Event) => {
     e.preventDefault();
     proposeAuthAction({ type: "LOGOUT_START" });
-    runClientUnscoped(navigate("/login"));
   };
 
   const handleLinkClick = (path: string) => (e: Event) => {

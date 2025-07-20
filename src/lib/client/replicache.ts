@@ -6,18 +6,18 @@ import {
   type Puller,
   type HTTPRequestInfo,
   type PullerResultV1,
+  makeIDBName,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
-import { runClientUnscoped } from "./runtime";
-import { PullRequestV1, makeIDBName, dropDatabase } from "replicache";
+import { runClientUnscoped, CustomHttpClientLive } from "./runtime";
+import { PullRequestV1 } from "replicache";
 import { PullResponseSchema } from "../shared/replicache-schemas";
-// ✅ FIX 1: Import the client logger
 import { clientLog } from "./clientLog";
+import { RpcLogClientLive } from "./rpc";
 
-// --- Mutators (unchanged) ---
 const mutators = {
   createNote: async (
     tx: WriteTransaction,
@@ -68,7 +68,6 @@ const mutators = {
 };
 export type ReplicacheMutators = typeof mutators;
 
-// --- Effect Service Definition ---
 export interface IReplicacheService {
   readonly client: Replicache<ReplicacheMutators>;
 }
@@ -87,40 +86,29 @@ const debugPuller: Puller = (async (
       schemaVersion: request.schemaVersion,
       clientID: (request as unknown as { clientID: string }).clientID,
     };
-
     const response = await fetch("/api/replicache/pull", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
     const responseText = await response.text();
-
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: response.status,
       errorMessage: response.ok ? "" : responseText,
     };
-
     if (!response.ok) {
       return { response: undefined, httpRequestInfo };
     }
-
     const pullResponseV1 = Schema.decodeUnknownSync(PullResponseSchema)(
       JSON.parse(responseText),
     );
-
     return { response: pullResponseV1, httpRequestInfo };
   } catch (e) {
-    // ✅ FIX 2: Log the full error object using the client logger.
-    // We use `runClientUnscoped` to "fire-and-forget" this logging Effect
-    // from within the plain async catch block.
     runClientUnscoped(
       clientLog("error", "Replicache puller caught an unexpected exception.", {
         error: e,
       }),
     );
-
-    // The rest of the logic remains the same to satisfy Replicache's contract.
     const errorMsg = e instanceof Error ? e.message : "Unknown puller error";
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: 0,
@@ -132,23 +120,64 @@ const debugPuller: Puller = (async (
 
 export const ReplicacheLive = (
   user: PublicUser,
-): Layer.Layer<ReplicacheService> =>
-  Layer.scoped(
-    ReplicacheService,
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        const client = new Replicache({
-          licenseKey: "l2c75a896d85a4914a51e54a32338b556",
-          name: user.id,
-          pushURL: "/api/replicache/push",
-          puller: debugPuller,
-          mutators,
+): Layer.Layer<ReplicacheService, never, never> => {
+  const RpcLogClientSelfContained = Layer.provide(
+    RpcLogClientLive,
+    CustomHttpClientLive,
+  );
+  const replicacheServiceEffect = Effect.acquireRelease(
+    Effect.gen(function* () {
+      const client = new Replicache({
+        licenseKey: "l2c75a896d85a4914a51e54a32338b556",
+        name: user.id,
+        pushURL: "/api/replicache/push",
+        puller: debugPuller,
+        mutators,
+      });
+      const ws = yield* setupWebSocket(client).pipe(Effect.orDie);
+      return { client, ws };
+    }),
+    // This release function is the single source of truth for cleanup.
+    ({ client, ws }) =>
+      Effect.gen(function* () {
+        yield* clientLog(
+          "info",
+          "[ReplicacheLive] Releasing scope. Closing WebSocket, Replicache client, and deleting all IndexedDB databases.",
+        );
+        ws.close();
+
+        // 1. Close the client to stop all internal activity and release locks.
+        yield* Effect.promise(() => client.close());
+
+        // 2. Define both database names.
+        const userDbName = makeIDBName(client.name);
+        const metaDbName = "replicache-dbs-v0";
+
+        // 3. Create an effect to delete a single database by name.
+        const deleteDb = (dbName: string) =>
+          Effect.async<void, Error>((resume) => {
+            const req = window.indexedDB.deleteDatabase(dbName);
+            req.onsuccess = () => resume(Effect.succeed(undefined));
+            req.onerror = () =>
+              resume(
+                Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
+              );
+          });
+
+        // 4. Run both deletion effects in parallel.
+        yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
+          concurrency: "unbounded",
+          discard: true,
         });
 
-        runClientUnscoped(Effect.forkDaemon(setupWebSocket(client)));
+        yield* clientLog(
+          "info",
+          `[ReplicacheLive] Successfully deleted IndexedDB databases: '${userDbName}' and '${metaDbName}'.`,
+        );
+      }).pipe(Effect.orDie),
+  ).pipe(Effect.map(({ client }) => ({ client })));
 
-        return { client };
-      }),
-      (service) => Effect.sync(() => service.client.close()),
-    ),
+  return Layer.scoped(ReplicacheService, replicacheServiceEffect).pipe(
+    Layer.provide(RpcLogClientSelfContained),
   );
+};

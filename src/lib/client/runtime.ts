@@ -18,11 +18,9 @@ import {
   RpcLogClientLive,
   RpcLogClient,
 } from "./rpc";
-import { authState } from "./stores/authStore";
 import { ReplicacheLive, ReplicacheService } from "./replicache";
 import type { PublicUser } from "../shared/schemas";
 
-// --- Context Definitions ---
 export type BaseClientContext =
   | LocationService
   | RpcLogClient
@@ -30,14 +28,12 @@ export type BaseClientContext =
   | RpcAuthClient;
 export type FullClientContext = BaseClientContext | ReplicacheService;
 
-// --- Layer Setup ---
 const RequestInitLive = Layer.succeed(FetchRequestInit, {
   credentials: "include",
 });
-const CustomHttpClientLive = FetchHttpClient.layer.pipe(
+export const CustomHttpClientLive = FetchHttpClient.layer.pipe(
   Layer.provide(RequestInitLive),
 );
-
 const rpcLayers = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
 const rpcAndHttpLayer = rpcLayers.pipe(
   Layer.provideMerge(CustomHttpClientLive),
@@ -46,24 +42,32 @@ export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
   LocationLive,
   rpcAndHttpLayer,
 );
-
-// --- Runtime Setup ---
 const appScope = Effect.runSync(Scope.make());
-let replicacheScope: Scope.CloseableScope | null = null;
 
-const AppRuntime = Effect.runSync(
+// The base runtime that is always active and lives for the duration of the app.
+export const AppRuntime = Effect.runSync(
   Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
+
+// The currently active runtime. It will be swapped out on login/logout.
 export let clientRuntime: Runtime.Runtime<FullClientContext> =
   AppRuntime as Runtime.Runtime<FullClientContext>;
 
+// A handle to the current user-specific scope, so we can close it.
+let replicacheScope: Scope.CloseableScope | null = null;
+
 /**
- * An effect to initialize the Replicache service and update the global runtime.
- * This should be called ONLY when a user is authenticated.
+ * Creates and activates the user-specific runtime with Replicache.
  */
-export const initializeReplicacheRuntime = (user: PublicUser) =>
+export const activateReplicacheRuntime = (user: PublicUser) =>
   Effect.gen(function* () {
+    yield* clientLog("info", "--> [runtime] Activating Replicache runtime...");
+    // If a scope already exists, close it first. This can happen on rapid user switches.
     if (replicacheScope) {
+      yield* clientLog(
+        "warn",
+        "[runtime] An existing replicacheScope was found during activation. Closing it first.",
+      );
       yield* Scope.close(replicacheScope, Exit.succeed(undefined));
     }
 
@@ -72,58 +76,75 @@ export const initializeReplicacheRuntime = (user: PublicUser) =>
 
     const replicacheLayer = ReplicacheLive(user);
     const fullLayer = Layer.merge(BaseClientLive, replicacheLayer);
+
     const newRuntime = yield* Scope.extend(
       Layer.toRuntime(fullLayer),
       newScope,
     );
-
-    clientRuntime = newRuntime;
+    clientRuntime = newRuntime; // Atomically swap the active runtime
     yield* clientLog(
       "info",
-      "[runtime] Replicache runtime initialized and activated.",
+      "<-- [runtime] Replicache runtime activated successfully.",
     );
   });
 
 /**
- * An effect to shut down the Replicache service and revert the runtime.
- * This should be called on logout.
+ * Deactivates the user-specific runtime and reverts to the base runtime.
  */
-export const shutdownReplicacheRuntime = Effect.gen(function* () {
-  if (replicacheScope) {
-    yield* Scope.close(replicacheScope, Exit.succeed(undefined));
-    replicacheScope = null;
-    // Revert to the base runtime
-    clientRuntime = AppRuntime as Runtime.Runtime<FullClientContext>;
-    yield* clientLog("info", "[runtime] Replicache runtime shut down.");
-  }
-});
+export const deactivateReplicacheRuntime = (): Effect.Effect<
+  void,
+  never,
+  RpcLogClient
+> =>
+  Effect.gen(function* () {
+    if (replicacheScope) {
+      yield* clientLog(
+        "info",
+        "--> [runtime] Deactivating Replicache runtime...",
+      );
 
-// --- Effect Runners ---
+      // --- START OF FIX ---
+
+      // 1. Capture the scope to be closed in a local variable.
+      const scopeToClose = replicacheScope;
+
+      // 2. Immediately nullify the global handles to prevent race conditions
+      //    where a new activation might try to use the old, closing scope.
+      replicacheScope = null;
+      clientRuntime = AppRuntime as Runtime.Runtime<FullClientContext>; // Revert to base
+
+      yield* clientLog(
+        "info",
+        "<-- [runtime] Replicache runtime deactivated successfully. Scope closing in background.",
+      );
+
+      // 3. Return the Effect that represents the closing operation.
+      //    The stream processor will now wait for this to complete before proceeding.
+      return yield* Scope.close(scopeToClose, Exit.succeed(undefined));
+
+      // --- END OF FIX ---
+    } else {
+      yield* clientLog(
+        "info",
+        "[runtime] Deactivation called, but no replicacheScope was active.",
+      );
+    }
+  });
+
+// --- Effect Runners (Unchanged) ---
 export const runClientPromise = <A, E>(
   effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
-  if (authState.value.status !== "authenticated") {
-    const error = new Error(
-      "runClientPromise called without an authenticated user.",
-    );
-    console.error(error.message, { effect });
-    return Promise.reject(error);
-  }
   return Runtime.runPromise(clientRuntime)(effect);
 };
-
-// ✅ FIX: The context type is updated to FullClientContext.
-// This allows the runner to correctly execute effects that depend on the ReplicacheService.
 export const runClientUnscoped = <A, E>(
   effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
   return Runtime.runFork(clientRuntime)(effect);
 };
-
 export const shutdownClient = () =>
   Effect.runPromise(Scope.close(appScope, Exit.succeed(undefined)));
 
-// --- Global Error Handling (unchanged) ---
 const setupGlobalErrorLogger = () => {
   const handler =
     (errorSource: string) => (event: ErrorEvent | PromiseRejectionEvent) => {
