@@ -1,8 +1,7 @@
 // src/components/pages/profile-page.ts
 import { LitElement, html, nothing } from "lit";
-import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream } from "effect";
-import { runClientUnscoped } from "../../lib/client/runtime";
+import { customElement } from "lit/decorators.js";
+import { Effect, Data } from "effect";
 import {
   authState,
   proposeAuthAction,
@@ -11,7 +10,8 @@ import {
 import { NotionButton } from "../ui/notion-button";
 import styles from "./ProfilePage.module.css";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
-import "../features/change-password-form"; // Import the new component
+import "../features/change-password-form";
+import { SamController } from "../../lib/client/sam-controller";
 
 // --- Custom Error Types ---
 class AvatarUploadError extends Data.TaggedError("AvatarUploadError")<{
@@ -38,177 +38,159 @@ type Action =
   | { type: "PASSWORD_CHANGE_SUCCESS" }
   | { type: "PASSWORD_CHANGE_CANCELLED" };
 
-@customElement("profile-page")
-export class ProfilePage extends LitElement {
-  @state()
-  private model: Model = {
-    auth: authState.value,
-    status: "idle",
-    message: null,
-    loadingAction: null,
-    isChangingPassword: false,
-  };
+// --- Pure Update Function ---
+const update = (model: Model, action: Action): Model => {
+  switch (action.type) {
+    case "AUTH_STATE_CHANGED":
+      return { ...model, auth: action.payload };
+    case "UPLOAD_START":
+      return {
+        ...model,
+        status: "loading",
+        loadingAction: "upload",
+        message: null,
+      };
+    case "UPLOAD_SUCCESS": {
+      const user = model.auth.user
+        ? { ...model.auth.user, avatar_url: action.payload }
+        : null;
+      if (user) {
+        // This is a side-effect, but it's acceptable here as it updates a global store
+        proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
+      }
+      return {
+        ...model,
+        status: "success",
+        loadingAction: null,
+        message: "Avatar updated!",
+      };
+    }
+    case "UPLOAD_ERROR":
+      return {
+        ...model,
+        status: "error",
+        loadingAction: null,
+        message: action.payload,
+      };
+    case "TOGGLE_CHANGE_PASSWORD_FORM":
+      return {
+        ...model,
+        isChangingPassword: !model.isChangingPassword,
+        message: null,
+        status: "idle",
+      };
+    case "PASSWORD_CHANGE_SUCCESS":
+      return {
+        ...model,
+        isChangingPassword: false,
+        status: "success",
+        message: "Password changed successfully!",
+      };
+    case "PASSWORD_CHANGE_CANCELLED":
+      return {
+        ...model,
+        isChangingPassword: false,
+        status: "idle",
+        message: null,
+      };
+    default:
+      return model;
+  }
+};
 
-  private readonly _actionQueue = Effect.runSync(Queue.unbounded<Action>());
-  private _mainFiber?: Fiber.RuntimeFiber<void, unknown>;
-  private _authUnsubscribe?: () => void;
+// --- Effectful Action Handler ---
+const handleAction = (
+  action: Action,
+  _model: Model,
+  propose: (a: Action) => void,
+): Effect.Effect<void, AvatarUploadError, RpcLogClient> => {
+  if (action.type === "UPLOAD_START") {
+    const formData = new FormData();
+    formData.append("avatar", action.payload);
 
-  private _propose = (action: Action) =>
-    runClientUnscoped(Queue.offer(this._actionQueue, action));
-
-  private _handleAction = (
-    action: Action,
-  ): Effect.Effect<void, never, RpcLogClient> => {
-    this.model = this._update(this.model, action);
-
-    if (action.type === "UPLOAD_START") {
-      const formData = new FormData();
-      formData.append("avatar", action.payload);
-
-      const uploadEffect = Effect.tryPromise({
-        try: () =>
-          fetch("/api/user/avatar", { method: "POST", body: formData }),
-        catch: (cause) =>
-          new AvatarUploadError({ message: String(cause), cause }),
-      }).pipe(
-        Effect.flatMap((response) =>
-          response.ok
-            ? Effect.tryPromise({
-                try: () =>
-                  response.json() as Promise<{
-                    avatarUrl: string;
-                  }>,
-                catch: (cause) =>
-                  new AvatarUploadError({
-                    message: "Failed to parse server response.",
-                    cause,
-                  }),
-              })
-            : Effect.promise(() => response.text()).pipe(
-                Effect.flatMap((text) =>
-                  Effect.fail(
-                    new AvatarUploadError({ message: text || "Upload failed" }),
-                  ),
+    const uploadEffect = Effect.tryPromise({
+      try: () => fetch("/api/user/avatar", { method: "POST", body: formData }),
+      catch: (cause) =>
+        new AvatarUploadError({ message: String(cause), cause }),
+    }).pipe(
+      Effect.flatMap((response) =>
+        response.ok
+          ? Effect.tryPromise({
+              try: () =>
+                response.json() as Promise<{
+                  avatarUrl: string;
+                }>,
+              catch: (cause) =>
+                new AvatarUploadError({
+                  message: "Failed to parse server response.",
+                  cause,
+                }),
+            })
+          : Effect.promise(() => response.text()).pipe(
+              Effect.flatMap((text) =>
+                Effect.fail(
+                  new AvatarUploadError({ message: text || "Upload failed" }),
                 ),
               ),
-        ),
-        Effect.matchEffect({
-          onSuccess: (json) =>
-            Effect.sync(() =>
-              this._propose({
-                type: "UPLOAD_SUCCESS",
-                payload: json.avatarUrl,
-              }),
             ),
-          onFailure: (error) =>
-            clientLog("error", "[profile-page] Avatar upload failed.", {
-              error,
-            }).pipe(
-              Effect.andThen(
-                Effect.sync(() =>
-                  this._propose({
-                    type: "UPLOAD_ERROR",
-                    payload: error.message,
-                  }),
-                ),
-              ),
-              Effect.catchAll((loggingError) =>
-                Effect.sync(() => {
-                  console.error(
-                    "CRITICAL: Failed to log avatar upload error to server.",
-                    loggingError,
-                  );
-                  this._propose({
-                    type: "UPLOAD_ERROR",
-                    payload: error.message,
-                  });
+      ),
+    );
+
+    return uploadEffect.pipe(
+      Effect.matchEffect({
+        onSuccess: (json) =>
+          Effect.sync(() =>
+            propose({
+              type: "UPLOAD_SUCCESS",
+              payload: json.avatarUrl,
+            }),
+          ),
+        onFailure: (error) =>
+          clientLog("error", "[profile-page] Avatar upload failed.", {
+            error,
+          }).pipe(
+            Effect.andThen(
+              Effect.sync(() =>
+                propose({
+                  type: "UPLOAD_ERROR",
+                  payload: error.message,
                 }),
               ),
             ),
-        }),
-      );
-
-      return Effect.asVoid(uploadEffect);
-    }
-    return Effect.void;
-  };
-
-  private _update(model: Model, action: Action): Model {
-    switch (action.type) {
-      case "AUTH_STATE_CHANGED":
-        return { ...model, auth: action.payload };
-      case "UPLOAD_START":
-        return {
-          ...model,
-          status: "loading",
-          loadingAction: "upload",
-          message: null,
-        };
-      case "UPLOAD_SUCCESS": {
-        const user = model.auth.user
-          ? { ...model.auth.user, avatar_url: action.payload }
-          : null;
-        if (user) {
-          proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
-        }
-        return {
-          ...model,
-          status: "success",
-          loadingAction: null,
-          message: "Avatar updated!",
-        };
-      }
-      case "UPLOAD_ERROR":
-        return {
-          ...model,
-          status: "error",
-          loadingAction: null,
-          message: action.payload,
-        };
-      case "TOGGLE_CHANGE_PASSWORD_FORM":
-        return {
-          ...model,
-          isChangingPassword: !model.isChangingPassword,
-          message: null,
-          status: "idle",
-        };
-      case "PASSWORD_CHANGE_SUCCESS":
-        return {
-          ...model,
-          isChangingPassword: false,
-          status: "success",
-          message: "Password changed successfully!",
-        };
-      case "PASSWORD_CHANGE_CANCELLED":
-        return {
-          ...model,
-          isChangingPassword: false,
-          status: "idle",
-          message: null,
-        };
-      default:
-        return model;
-    }
+          ),
+      }),
+    );
   }
+  return Effect.void;
+};
 
-  private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
-    Stream.runForEach(this._handleAction),
+@customElement("profile-page")
+export class ProfilePage extends LitElement {
+  private ctrl = new SamController<this, Model, Action, AvatarUploadError>(
+    this,
+    {
+      auth: authState.value,
+      status: "idle",
+      message: null,
+      loadingAction: null,
+      isChangingPassword: false,
+    },
+    update,
+    handleAction,
   );
+
+  private _authUnsubscribe?: () => void;
 
   override connectedCallback(): void {
     super.connectedCallback();
     this._authUnsubscribe = authState.subscribe((newAuthState) =>
-      this._propose({ type: "AUTH_STATE_CHANGED", payload: newAuthState }),
+      this.ctrl.propose({ type: "AUTH_STATE_CHANGED", payload: newAuthState }),
     );
-    this._mainFiber = runClientUnscoped(this._run);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._authUnsubscribe?.();
-    if (this._mainFiber) {
-      runClientUnscoped(Fiber.interrupt(this._mainFiber));
-    }
   }
 
   protected override createRenderRoot() {
@@ -216,7 +198,7 @@ export class ProfilePage extends LitElement {
   }
 
   override render() {
-    const { user } = this.model.auth;
+    const { user } = this.ctrl.model.auth;
     if (!user) return html`<p>Loading...</p>`;
 
     const avatarUrl =
@@ -225,7 +207,7 @@ export class ProfilePage extends LitElement {
 
     const onFileChange = (e: Event) => {
       const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) this._propose({ type: "UPLOAD_START", payload: file });
+      if (file) this.ctrl.propose({ type: "UPLOAD_START", payload: file });
     };
 
     return html`
@@ -233,18 +215,18 @@ export class ProfilePage extends LitElement {
         <div
           class=${styles.profileCard}
           @password-changed-success=${() =>
-            this._propose({ type: "PASSWORD_CHANGE_SUCCESS" })}
+            this.ctrl.propose({ type: "PASSWORD_CHANGE_SUCCESS" })}
           @change-password-cancelled=${() =>
-            this._propose({ type: "PASSWORD_CHANGE_CANCELLED" })}
+            this.ctrl.propose({ type: "PASSWORD_CHANGE_CANCELLED" })}
         >
           <h2 class=${styles.title}>Your Profile</h2>
-          ${this.model.message
+          ${this.ctrl.model.message
             ? html`<div
-                class="${styles.message} ${this.model.status === "success"
+                class="${styles.message} ${this.ctrl.model.status === "success"
                   ? styles.messageSuccess
                   : styles.messageError}"
               >
-                ${this.model.message}
+                ${this.ctrl.model.message}
               </div>`
             : nothing}
           <div class=${styles.avatarContainer}>
@@ -252,7 +234,7 @@ export class ProfilePage extends LitElement {
             <p class=${styles.email}>${user.email}</p>
           </div>
           <div class=${styles.uploadSection}>
-            ${this.model.isChangingPassword
+            ${this.ctrl.model.isChangingPassword
               ? html`<change-password-form></change-password-form>`
               : html`<div class="mt-4 flex flex-col items-center gap-4">
                   <input
@@ -268,14 +250,16 @@ export class ProfilePage extends LitElement {
                       (
                         this.querySelector("#avatar-upload") as HTMLElement
                       )?.click(),
-                    loading: this.model.loadingAction === "upload",
-                    disabled: this.model.status === "loading",
+                    loading: this.ctrl.model.loadingAction === "upload",
+                    disabled: this.ctrl.model.status === "loading",
                   })}
                   ${NotionButton({
                     children: "Change Password",
                     onClick: () =>
-                      this._propose({ type: "TOGGLE_CHANGE_PASSWORD_FORM" }),
-                    disabled: this.model.status === "loading",
+                      this.ctrl.propose({
+                        type: "TOGGLE_CHANGE_PASSWORD_FORM",
+                      }),
+                    disabled: this.ctrl.model.status === "loading",
                   })}
                 </div>`}
           </div>

@@ -1,14 +1,15 @@
 // src/components/pages/forgot-password-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
-import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream } from "effect";
+import { customElement } from "lit/decorators.js";
+import { Effect, Data } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
-import { RpcAuthClient, RpcAuthClientLive } from "../../lib/client/rpc";
+import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./LoginPage.module.css";
-import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
+import { clientLog } from "../../lib/client/clientLog";
+import { SamController } from "../../lib/client/sam-controller";
 
 // --- Model ---
 interface Model {
@@ -41,79 +42,76 @@ const update = (model: Model, action: Action): Model => {
       return { ...model, isLoading: false, isSuccess: true };
     case "REQUEST_ERROR":
       return { ...model, isLoading: false, error: action.payload };
+    default:
+      return model;
   }
+};
+
+// --- Effectful Action Handler ---
+const handleAction = (
+  action: Action,
+  model: Model,
+  propose: (a: Action) => void,
+): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
+  if (action.type === "REQUEST_START") {
+    const { email } = model;
+
+    const requestEffect = Effect.gen(function* () {
+      const rpcClient = yield* RpcAuthClient;
+      return yield* rpcClient
+        .requestPasswordReset({ email })
+        .pipe(
+          Effect.catchAll((error) =>
+            Effect.fail(new UnknownRequestError({ cause: error })),
+          ),
+        );
+    });
+
+    return requestEffect.pipe(
+      Effect.matchEffect({
+        onSuccess: () =>
+          Effect.sync(() => propose({ type: "REQUEST_SUCCESS" })),
+        onFailure: (error) => {
+          const message = "An unknown error occurred. Please try again.";
+          return clientLog("error", "[forgot-password] RPC failed", error).pipe(
+            Effect.andThen(
+              Effect.sync(() =>
+                propose({ type: "REQUEST_ERROR", payload: message }),
+              ),
+            ),
+          );
+        },
+      }),
+      Effect.asVoid,
+    );
+  }
+  return Effect.void;
 };
 
 // --- Component Definition ---
 @customElement("forgot-password-page")
 export class ForgotPasswordPage extends LitElement {
-  @state()
-  private model: Model = {
-    email: "",
-    error: null,
-    isLoading: false,
-    isSuccess: false,
-  };
-
-  private readonly _actionQueue = Effect.runSync(Queue.unbounded<Action>());
-  private _mainFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
-
-  private _propose = (action: Action) =>
-    runClientUnscoped(Queue.offer(this._actionQueue, action));
-
-  private _handleAction = (
-    action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
-    this.model = update(this.model, action);
-
-    if (action.type === "REQUEST_START") {
-      const { email } = this.model;
-
-      const requestEffect = Effect.gen(function* () {
-        const rpcClient = yield* RpcAuthClient;
-        return yield* rpcClient
-          .requestPasswordReset({ email })
-          .pipe(
-            Effect.catchAll((error) =>
-              Effect.fail(new UnknownRequestError({ cause: error })),
-            ),
-          );
-      });
-
-      return requestEffect.pipe(
-        Effect.matchEffect({
-          onSuccess: () => this._propose({ type: "REQUEST_SUCCESS" }),
-          onFailure: (error) => {
-            const message = "An unknown error occurred. Please try again.";
-            clientLog("error", "[forgot-password] RPC failed", error);
-            return this._propose({ type: "REQUEST_ERROR", payload: message });
-          },
-        }),
-        Effect.asVoid,
-      );
-    }
-    return Effect.void;
-  };
-
-  private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
-    Stream.runForEach(this._handleAction),
-    Effect.provide(RpcAuthClientLive),
+  private ctrl = new SamController<
+    this,
+    Model,
+    Action,
+    never // Error is handled within handleAction
+  >(
+    this,
+    {
+      email: "",
+      error: null,
+      isLoading: false,
+      isSuccess: false,
+    },
+    update,
+    handleAction,
   );
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this._mainFiber = runClientUnscoped(this._run);
-  }
-
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this._mainFiber) {
-      runClientUnscoped(Fiber.interrupt(this._mainFiber));
-    }
-  }
-
   override render(): TemplateResult {
-    if (this.model.isSuccess) {
+    const model = this.ctrl.model;
+
+    if (model.isSuccess) {
       return html`
         <div class=${styles.container}>
           <div class=${styles.formWrapper}>
@@ -149,7 +147,7 @@ export class ForgotPasswordPage extends LitElement {
           <form
             @submit=${(e: Event) => {
               e.preventDefault();
-              this._propose({ type: "REQUEST_START" });
+              this.ctrl.propose({ type: "REQUEST_START" });
             }}
           >
             <div class="space-y-4">
@@ -157,9 +155,9 @@ export class ForgotPasswordPage extends LitElement {
                 id: "email",
                 label: "Email",
                 type: "email",
-                value: this.model.email,
+                value: model.email,
                 onInput: (e) =>
-                  this._propose({
+                  this.ctrl.propose({
                     type: "UPDATE_EMAIL",
                     payload: (e.target as HTMLInputElement).value,
                   }),
@@ -167,17 +165,15 @@ export class ForgotPasswordPage extends LitElement {
               })}
             </div>
 
-            ${this.model.error
-              ? html`<div class=${styles.errorText}>${this.model.error}</div>`
+            ${model.error
+              ? html`<div class=${styles.errorText}>${model.error}</div>`
               : nothing}
 
             <div class="mt-6">
               ${NotionButton({
-                children: this.model.isLoading
-                  ? "Sending..."
-                  : "Send Reset Link",
+                children: model.isLoading ? "Sending..." : "Send Reset Link",
                 type: "submit",
-                loading: this.model.isLoading,
+                loading: model.isLoading,
               })}
             </div>
           </form>
