@@ -25,6 +25,13 @@ export class UnknownAuthError extends Data.TaggedError("UnknownAuthError")<{
   readonly cause: unknown;
 }> {}
 
+// --- Error Types ---
+export class UnknownPasswordError extends Data.TaggedError(
+  "UnknownPasswordError",
+)<{
+  readonly cause: unknown;
+}> {}
+
 export type LoginError =
   | LoginInvalidCredentialsError
   | LoginEmailNotVerifiedError

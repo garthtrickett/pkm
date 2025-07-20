@@ -10,6 +10,8 @@ import {
 import { AuthError } from "../../shared/api";
 import { clientLog } from "../clientLog";
 import { RpcAuthClient, RpcAuthClientLive, RpcLogClient } from "../rpc";
+// ✅ 1. Import the ReplicacheService to use it during logout
+import { ReplicacheService } from "../replicache";
 
 // --- Model & State ---
 export interface AuthModel {
@@ -72,13 +74,16 @@ const update = (model: AuthModel, action: AuthAction): AuthModel => {
 // --- Action Handler (FIXED) ---
 const handleAuthAction = (
   action: AuthAction,
-): Effect.Effect<void, Error, RpcAuthClient | RpcLogClient> =>
+): Effect.Effect<
+  void,
+  Error,
+  RpcAuthClient | RpcLogClient | ReplicacheService
+> =>
   Effect.gen(function* () {
     const authClient = yield* RpcAuthClient;
 
     switch (action.type) {
       case "AUTH_CHECK_START": {
-        // Set state to 'authenticating' to show loading UI
         authState.value = update(authState.value, action);
         const result = yield* Effect.either(authClient.me());
         if (result._tag === "Right") {
@@ -95,17 +100,10 @@ const handleAuthAction = (
         break;
       }
 
-      // ✅ THIS IS THE FIX ✅
-      // On success, initialize services BEFORE updating the state to 'authenticated'
       case "AUTH_CHECK_SUCCESS":
       case "SET_AUTHENTICATED": {
-        // Step 1: Initialize the runtime with the authenticated user from the action payload.
         yield* initializeReplicacheRuntime(action.payload);
-
-        // Step 2: NOW update the global state. This will trigger the UI to render
-        // components that can safely depend on the initialized runtime.
         authState.value = update(authState.value, action);
-
         yield* clientLog(
           "info",
           `[authStore] State is now authenticated and runtime is ready.`,
@@ -113,21 +111,32 @@ const handleAuthAction = (
         break;
       }
 
-      // On failure, shut down services BEFORE updating the state to 'unauthenticated'
       case "AUTH_CHECK_FAILURE": {
         yield* shutdownReplicacheRuntime;
         authState.value = update(authState.value, action);
         break;
       }
 
+      // ✅ THIS IS THE FIX ✅
       case "LOGOUT_START": {
         authState.value = update(authState.value, action);
+
+        // Step 1: Get the Replicache service while the user is still authenticated.
+        const replicache = yield* ReplicacheService;
+        // Step 2: Purge the local IndexedDB storage BEFORE logging out on the server.
+        // This is a promise, so we wrap it in an Effect.
+        yield* Effect.promise(() => replicache.client.experimental_delete());
+        yield* clientLog(
+          "info",
+          "[authStore] Replicache IndexedDB purged for logout.",
+        );
+
+        // Step 3: Now proceed with the existing server-side logout logic.
         yield* Effect.either(authClient.logout());
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
       }
 
-      // On logout success, shut down services BEFORE updating the final state
       case "LOGOUT_SUCCESS": {
         document.cookie =
           "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
@@ -143,6 +152,7 @@ const RpcClientsLive = Layer.merge(RpcAuthClientLive, RpcLogClient.Default);
 const authProcess = Stream.fromQueue(_actionQueue).pipe(
   Stream.runForEach((action) =>
     handleAuthAction(action).pipe(
+      // The runtime for this stream will provide the ReplicacheService when available
       Effect.provide(RpcClientsLive),
       Effect.catchAll((err) =>
         clientLog(

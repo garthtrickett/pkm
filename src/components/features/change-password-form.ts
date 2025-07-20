@@ -1,7 +1,7 @@
 // src/components/features/change-password-form.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
+import { Effect, Queue, Fiber, Stream, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import {
   RpcAuthClient,
@@ -12,13 +12,10 @@ import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 
-// --- Error Types ---
-class IncorrectPasswordError extends Data.TaggedError(
-  "IncorrectPasswordError",
-) {}
-class UnknownPasswordError extends Data.TaggedError("UnknownPasswordError")<{
-  readonly cause: unknown;
-}> {}
+import {
+  IncorrectPasswordError,
+  UnknownPasswordError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {

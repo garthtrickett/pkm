@@ -12,7 +12,7 @@ import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import { runClientUnscoped } from "./runtime";
-import { PullRequestV1 } from "replicache";
+import { PullRequestV1, makeIDBName, dropDatabase } from "replicache";
 import { PullResponseSchema } from "../shared/replicache-schemas";
 // ✅ FIX 1: Import the client logger
 import { clientLog } from "./clientLog";
