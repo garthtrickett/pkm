@@ -127,53 +127,58 @@ export const ReplicacheLive = (
   );
   const replicacheServiceEffect = Effect.acquireRelease(
     Effect.gen(function* () {
+      // --- NEW LOGIC: Proactively delete old databases before initializing ---
+      const userDbName = makeIDBName(user.id);
+      const metaDbName = "replicache-dbs-v0";
+
+      const deleteDb = (dbName: string) =>
+        Effect.async<void, Error>((resume) => {
+          const req = window.indexedDB.deleteDatabase(dbName);
+          req.onblocked = () => {
+            runClientUnscoped(
+              clientLog("warn", `Deletion of '${dbName}' is blocked.`),
+            );
+          };
+          req.onsuccess = () => resume(Effect.succeed(undefined));
+          req.onerror = () =>
+            resume(
+              Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
+            );
+        });
+
+      yield* clientLog(
+        "info",
+        `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
+      );
+
+      // We run the deletions and ignore any errors (e.g., if they don't exist on first login)
+      yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
+        concurrency: "unbounded",
+        discard: true,
+      }).pipe(Effect.catchAll(() => Effect.void));
+      // --- END OF NEW LOGIC ---
+
+      // Now, we can safely create the new Replicache instance
       const client = new Replicache({
         licenseKey: "l2c75a896d85a4914a51e54a32338b556",
-        name: user.id,
+        name: user.id, // Use user.id which is stable
         pushURL: "/api/replicache/push",
         puller: debugPuller,
         mutators,
       });
+
       const ws = yield* setupWebSocket(client).pipe(Effect.orDie);
       return { client, ws };
     }),
-    // This release function is the single source of truth for cleanup.
+    // --- SIMPLIFIED RELEASE: Deletion logic has been moved to the acquire step ---
     ({ client, ws }) =>
       Effect.gen(function* () {
         yield* clientLog(
           "info",
-          "[ReplicacheLive] Releasing scope. Closing WebSocket, Replicache client, and deleting all IndexedDB databases.",
+          "[ReplicacheLive] Releasing scope. Closing WebSocket and Replicache client.",
         );
         ws.close();
-
-        // 1. Close the client to stop all internal activity and release locks.
         yield* Effect.promise(() => client.close());
-
-        // 2. Define both database names.
-        const userDbName = makeIDBName(client.name);
-        const metaDbName = "replicache-dbs-v0";
-
-        // 3. Create an effect to delete a single database by name.
-        const deleteDb = (dbName: string) =>
-          Effect.async<void, Error>((resume) => {
-            const req = window.indexedDB.deleteDatabase(dbName);
-            req.onsuccess = () => resume(Effect.succeed(undefined));
-            req.onerror = () =>
-              resume(
-                Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
-              );
-          });
-
-        // 4. Run both deletion effects in parallel.
-        yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
-          concurrency: "unbounded",
-          discard: true,
-        });
-
-        yield* clientLog(
-          "info",
-          `[ReplicacheLive] Successfully deleted IndexedDB databases: '${userDbName}' and '${metaDbName}'.`,
-        );
       }).pipe(Effect.orDie),
   ).pipe(Effect.map(({ client }) => ({ client })));
 
