@@ -22,7 +22,7 @@ export class RpcLogClient extends Effect.Service<RpcLogClient>()(
 export const clientLog = (
   level: Exclude<LogLevel, "silent">,
   ...args: unknown[]
-): Effect.Effect<void, Error, RpcLogClient> =>
+): Effect.Effect<void, never, RpcLogClient> =>
   Effect.gen(function* () {
     const client = yield* RpcLogClient;
     yield* client.log({ level, args }).pipe(

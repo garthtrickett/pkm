@@ -12,7 +12,7 @@ import { TokenCreationError } from "./Errors";
 // A placeholder for a future email service.
 export const sendVerificationEmail = (email: string, token: string) =>
   Effect.logInfo(
-    { email, verificationLink: `http://localhost:5173/verify-email/${token}` },
+    { email, verificationLink: `https://localhost:5173/verify-email/${token}` },
     "TODO: Implement email sending. Sending verification email.",
   );
 

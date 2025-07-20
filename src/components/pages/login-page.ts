@@ -1,21 +1,18 @@
 // src/components/pages/login-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
-import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
+import { customElement } from "lit/decorators.js";
 import { runClientUnscoped } from "../../lib/client/runtime";
+import { Effect, Data, Schema } from "effect";
 import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
-import {
-  RpcAuthClient,
-  RpcAuthClientLive,
-  RpcLogClient,
-} from "../../lib/client/rpc";
+import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
 import { clientLog } from "../../lib/client/clientLog";
+import { SamController } from "../../lib/client/sam-controller";
 
 // --- Model ---
 interface Model {
@@ -36,7 +33,12 @@ class UnknownLoginError extends Data.TaggedError("UnknownLoginError")<{
   readonly cause: unknown;
 }> {}
 
-// --- Actions (The "Signal" in SAM) ---
+type LoginActionError =
+  | LoginInvalidCredentialsError
+  | LoginEmailNotVerifiedError
+  | UnknownLoginError;
+
+// --- Actions ---
 type Action =
   | { type: "UPDATE_EMAIL"; payload: string }
   | { type: "UPDATE_PASSWORD"; payload: string }
@@ -60,131 +62,113 @@ const update = (model: Model, action: Action): Model => {
   }
 };
 
-// --- Component Definition ---
-@customElement("login-page")
-export class LoginPage extends LitElement {
-  @state()
-  private model: Model = {
-    email: "",
-    password: "",
-    error: null,
-    isLoading: false,
-  };
+// --- Action Handler ---
+const handleAction = (
+  action: Action,
+  model: Model,
+  propose: (a: Action) => void,
+): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
+  if (action.type === "LOGIN_START") {
+    const { email, password } = model;
 
-  private readonly _actionQueue = Effect.runSync(Queue.unbounded<Action>());
-  private _mainFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
+    const loginEffect: Effect.Effect<
+      { user: PublicUser; sessionId: string },
+      LoginActionError,
+      RpcAuthClient | RpcLogClient
+    > = Effect.gen(function* () {
+      const rpcClient = yield* RpcAuthClient;
+      return yield* rpcClient.login({ email, password }).pipe(
+        Effect.catchAll((error) => {
+          const logAndDecode = clientLog(
+            "debug",
+            "[login-page] Raw error received from RPC:",
+            { error },
+          ).pipe(Effect.andThen(Schema.decodeUnknown(AuthError)(error)));
 
-  private _propose = (action: Action) =>
-    runClientUnscoped(Queue.offer(this._actionQueue, action));
-
-  private _handleAction = (
-    action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
-    this.model = update(this.model, action);
-
-    if (action.type === "LOGIN_START") {
-      const { email, password } = this.model;
-
-      const loginEffect = Effect.gen(function* () {
-        const rpcClient = yield* RpcAuthClient;
-        return yield* rpcClient.login({ email, password }).pipe(
-          Effect.catchAll((error) => {
-            // --- EXHAUSTIVE LOGGING ---
-            const logAndDecode = clientLog(
-              "debug",
-              "[login-page] Raw error received from RPC:",
-              { error },
-            ).pipe(Effect.andThen(Schema.decodeUnknown(AuthError)(error)));
-
-            return logAndDecode.pipe(
-              Effect.matchEffect({
-                onSuccess: (authError) => {
-                  // --- EXHAUSTIVE LOGGING ---
-                  clientLog(
-                    "info",
-                    "[login-page] Successfully decoded AuthError:",
-                    { authError },
-                  );
-
-                  const specificError:
-                    | LoginInvalidCredentialsError
-                    | LoginEmailNotVerifiedError
-                    | UnknownLoginError =
-                    authError._tag === "Unauthorized"
-                      ? new LoginInvalidCredentialsError()
-                      : authError._tag === "Forbidden"
-                        ? new LoginEmailNotVerifiedError()
-                        : new UnknownLoginError({ cause: authError });
-                  return Effect.fail(specificError);
-                },
-                onFailure: (parseError) => {
-                  // --- EXHAUSTIVE LOGGING ---
-                  clientLog(
-                    "error",
-                    "[login-page] Failed to decode error as AuthError:",
-                    { parseError },
-                  );
-                  return Effect.fail(
-                    new UnknownLoginError({ cause: parseError }),
-                  );
-                },
-              }),
-            );
-          }),
-        );
-      });
-
-      return loginEffect.pipe(
-        Effect.matchEffect({
-          onSuccess: (result) =>
-            this._propose({ type: "LOGIN_SUCCESS", payload: result }),
-          onFailure: (error) => {
-            const message =
-              error._tag === "LoginInvalidCredentialsError"
-                ? "Incorrect email or password."
-                : error._tag === "LoginEmailNotVerifiedError"
-                  ? "Please verify your email address before logging in."
-                  : "An unknown error occurred. Please try again.";
-
-            // --- EXHAUSTIVE LOGGING ---
-            clientLog(
-              "info",
-              "[login-page] Mapping domain error to UI message:",
-              { errorTag: error._tag, message },
-            );
-            return this._propose({ type: "LOGIN_ERROR", payload: message });
-          },
+          return logAndDecode.pipe(
+            Effect.matchEffect({
+              onSuccess: (authError) => {
+                clientLog(
+                  "info",
+                  "[login-page] Successfully decoded AuthError:",
+                  { authError },
+                );
+                const specificError: LoginActionError =
+                  authError._tag === "Unauthorized"
+                    ? new LoginInvalidCredentialsError()
+                    : authError._tag === "Forbidden"
+                      ? new LoginEmailNotVerifiedError()
+                      : new UnknownLoginError({ cause: authError });
+                return Effect.fail(specificError);
+              },
+              onFailure: (parseError) => {
+                clientLog(
+                  "error",
+                  "[login-page] Failed to decode error as AuthError:",
+                  { parseError },
+                );
+                return Effect.fail(
+                  new UnknownLoginError({ cause: parseError }),
+                );
+              },
+            }),
+          );
         }),
       );
-    } else if (action.type === "LOGIN_SUCCESS") {
-      const { user, sessionId } = action.payload;
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 30);
-      document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
-      proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
-    }
+    });
 
-    return Effect.void;
-  };
+    return loginEffect.pipe(
+      Effect.matchEffect({
+        onSuccess: (result) =>
+          Effect.sync(() =>
+            propose({ type: "LOGIN_SUCCESS", payload: result }),
+          ),
+        onFailure: (error) => {
+          const message =
+            error._tag === "LoginInvalidCredentialsError"
+              ? "Incorrect email or password."
+              : error._tag === "LoginEmailNotVerifiedError"
+                ? "Please verify your email address before logging in."
+                : "An unknown error occurred. Please try again.";
 
-  private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
-    Stream.runForEach(this._handleAction),
-    Effect.provide(RpcAuthClientLive),
+          clientLog(
+            "info",
+            "[login-page] Mapping domain error to UI message:",
+            { errorTag: error._tag, message },
+          );
+          return Effect.sync(() =>
+            propose({ type: "LOGIN_ERROR", payload: message }),
+          );
+        },
+      }),
+    );
+  } else if (action.type === "LOGIN_SUCCESS") {
+    const { user, sessionId } = action.payload;
+    const expires = new Date();
+    expires.setDate(expires.getDate() + 30);
+    document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+    proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
+  }
+
+  return Effect.void;
+};
+
+@customElement("login-page")
+export class LoginPage extends LitElement {
+  private ctrl = new SamController<
+    this,
+    Model,
+    Action,
+    never // The error type is `never` because `handleAction` catches all its specific errors
+  >(
+    this,
+    { email: "", password: "", error: null, isLoading: false },
+    update,
+    handleAction,
   );
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this._mainFiber = runClientUnscoped(this._run);
-  }
-
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this._mainFiber) {
-      runClientUnscoped(Fiber.interrupt(this._mainFiber));
-    }
-  }
-
   override render(): TemplateResult {
+    const model = this.ctrl.model;
     return html`
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
@@ -192,7 +176,7 @@ export class LoginPage extends LitElement {
           <form
             @submit=${(e: Event) => {
               e.preventDefault();
-              this._propose({ type: "LOGIN_START" });
+              this.ctrl.propose({ type: "LOGIN_START" });
             }}
           >
             <div class="space-y-4">
@@ -200,9 +184,9 @@ export class LoginPage extends LitElement {
                 id: "email",
                 label: "Email",
                 type: "email",
-                value: this.model.email,
+                value: model.email,
                 onInput: (e) =>
-                  this._propose({
+                  this.ctrl.propose({
                     type: "UPDATE_EMAIL",
                     payload: (e.target as HTMLInputElement).value,
                   }),
@@ -212,9 +196,9 @@ export class LoginPage extends LitElement {
                 id: "password",
                 label: "Password",
                 type: "password",
-                value: this.model.password,
+                value: model.password,
                 onInput: (e) =>
-                  this._propose({
+                  this.ctrl.propose({
                     type: "UPDATE_PASSWORD",
                     payload: (e.target as HTMLInputElement).value,
                   }),
@@ -222,15 +206,15 @@ export class LoginPage extends LitElement {
               })}
             </div>
 
-            ${this.model.error
-              ? html`<div class=${styles.errorText}>${this.model.error}</div>`
+            ${model.error
+              ? html`<div class=${styles.errorText}>${model.error}</div>`
               : nothing}
 
             <div class="mt-6">
               ${NotionButton({
-                children: this.model.isLoading ? "Logging in..." : "Login",
+                children: model.isLoading ? "Logging in..." : "Login",
                 type: "submit",
-                loading: this.model.isLoading,
+                loading: model.isLoading,
               })}
             </div>
           </form>
