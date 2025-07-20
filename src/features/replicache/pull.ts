@@ -1,21 +1,18 @@
 // src/features/replicache/pull.ts
-
-import { Effect, Schema, Data } from "effect";
-import {
-  type PullRequest,
-  type PullResponse,
-} from "../../lib/shared/replicache-schemas";
+import { Data, Effect, Schema } from "effect";
+import type { Transaction } from "kysely";
 import { Db } from "../../db/DbTag";
 import { Auth, AuthError } from "../../lib/server/auth";
-import {
-  BlockIdSchema,
-  NoteIdSchema,
-  type User,
-} from "../../lib/shared/schemas";
-import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
-import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
-import type { Transaction } from "kysely";
+import { syncableEntities } from "../../lib/server/sync/sync.registry";
+import { CvrDataSchema, type CvrData } from "../../lib/server/sync/sync.types";
+import type {
+  PullRequest,
+  PullResponse,
+} from "../../lib/shared/replicache-schemas";
+import type { BlockId, NoteId, User } from "../../lib/shared/schemas";
 import type { Database } from "../../types";
+import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
+import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
 
 class PullDatabaseError extends Data.TaggedError("PullDatabaseError")<{
   readonly cause: unknown;
@@ -27,10 +24,9 @@ const pullLogicEffect = (
   user: User,
 ): Effect.Effect<PullResponse, PullDatabaseError> =>
   Effect.gen(function* () {
-    // ... (This function's implementation remains the same)
-    const { clientGroupID, cookie } = req;
-    const fromVersion = cookie ?? 0;
+    const fromVersion = req.cookie ?? 0;
 
+    // 1. Get last mutation IDs for all clients in the group.
     const clients = yield* Effect.tryPromise({
       try: () =>
         trx
@@ -39,168 +35,98 @@ const pullLogicEffect = (
           .where(
             "client_group_id",
             "=",
-            clientGroupID as ReplicacheClientGroupId,
+            req.clientGroupID as ReplicacheClientGroupId,
           )
           .execute(),
       catch: (cause) => new PullDatabaseError({ cause }),
     });
-
     const lastMutationIDChanges = Object.fromEntries(
       clients.map((c) => [c.id, c.last_mutation_id]),
     );
 
-    const [allNotes, allBlocks] = yield* Effect.all([
-      Effect.tryPromise({
-        try: () =>
-          trx
-            .selectFrom("note")
-            .selectAll()
-            .where("user_id", "=", user.id)
-            .execute(),
-        catch: (cause) => new PullDatabaseError({ cause }),
-      }),
-      Effect.tryPromise({
-        try: () =>
-          trx
-            .selectFrom("block")
-            .selectAll()
-            .where("user_id", "=", user.id)
-            .execute(),
-        catch: (cause) => new PullDatabaseError({ cause }),
-      }),
-    ]);
+    // 2. Get all current entity IDs for the new CVR.
+    const allCurrentIds = yield* Effect.all(
+      syncableEntities.map((entity) =>
+        entity.getAllIds(trx, user.id).pipe(
+          Effect.map((ids) => ({
+            key: entity.keyInCVR,
+            ids,
+          })),
+        ),
+      ),
+    );
+
+    // 3. Create and insert the new Client View Record.
+    const newCVRData: CvrData = {
+      notes: (allCurrentIds.find((item) => item.key === "notes")?.ids ??
+        []) as NoteId[],
+      blocks: (allCurrentIds.find((item) => item.key === "blocks")?.ids ??
+        []) as BlockId[],
+    };
 
     const nextCVR = yield* Effect.tryPromise({
       try: () =>
         trx
           .insertInto("client_view_record")
-          .values({
-            user_id: user.id,
-            data: {
-              notes: allNotes.map((n) => n.id),
-              blocks: allBlocks.map((b) => b.id),
-            },
-          })
+          .values({ user_id: user.id, data: newCVRData })
           .returning("id")
           .executeTakeFirstOrThrow(),
       catch: (cause) => new PullDatabaseError({ cause }),
     });
     const nextVersion = Number(nextCVR.id);
 
-    const lastPullTimestamp = yield* Effect.if(fromVersion > 0, {
-      onTrue: () =>
-        Effect.tryPromise({
-          try: () =>
-            trx
-              .selectFrom("client_view_record")
-              .select("created_at")
-              .where("id", "=", fromVersion as ClientViewRecordId)
-              .where("user_id", "=", user.id)
-              .executeTakeFirst(),
-          catch: (cause) => new PullDatabaseError({ cause }),
-        }).pipe(Effect.map((cvr) => cvr?.created_at ?? new Date(0))),
-      onFalse: () => Effect.succeed(new Date(0)),
-    });
+    // 4. Fetch the previous CVR and its timestamp to calculate changes.
+    const { oldCVRData, lastPullTimestamp } = yield* Effect.if(
+      fromVersion > 0,
+      {
+        onTrue: () =>
+          Effect.tryPromise({
+            try: () =>
+              trx
+                .selectFrom("client_view_record")
+                .selectAll()
+                .where("id", "=", fromVersion as ClientViewRecordId)
+                .where("user_id", "=", user.id)
+                .executeTakeFirst(),
+            catch: (cause) => new PullDatabaseError({ cause }),
+          }).pipe(
+            Effect.map((cvr) => ({
+              oldCVRData: cvr
+                ? Schema.decodeUnknownSync(CvrDataSchema)(cvr.data)
+                : undefined,
+              lastPullTimestamp: cvr?.created_at ?? new Date(0),
+            })),
+          ),
+        onFalse: () =>
+          Effect.succeed({
+            oldCVRData: undefined,
+            lastPullTimestamp: new Date(0),
+          }),
+      },
+    );
 
-    const [changedNotes, changedBlocks] = yield* Effect.all([
-      Effect.tryPromise({
-        try: () =>
-          trx
-            .selectFrom("note")
-            .selectAll()
-            .where("user_id", "=", user.id)
-            .where("updated_at", ">", lastPullTimestamp)
-            .execute(),
-        catch: (cause) => new PullDatabaseError({ cause }),
-      }),
-      Effect.tryPromise({
-        try: () =>
-          trx
-            .selectFrom("block")
-            .selectAll()
-            .where("user_id", "=", user.id)
-            .where("updated_at", ">", lastPullTimestamp)
-            .execute(),
-        catch: (cause) => new PullDatabaseError({ cause }),
-      }),
-    ]);
-
-    const patch: Array<PullResponse["patch"][number]> = [];
-
-    changedNotes.forEach((note) =>
-      patch.push({
-        op: "put",
-        key: `note/${note.id}`,
-        value: {
-          _tag: "note",
-          id: note.id,
-          user_id: note.user_id,
-          title: note.title,
-          content: note.content,
-          version: note.version,
-          created_at: note.created_at.toISOString(),
-          updated_at: note.updated_at.toISOString(),
-        },
+    // 5. Get patch operations from all registered entities in parallel.
+    const patchOperations = yield* Effect.all(
+      syncableEntities.map((entity) => {
+        // ✅ THIS IS THE FIX ✅
+        // We tell TypeScript to treat the array of branded IDs as a simple
+        // `readonly string[]`, which the `Set` constructor can handle.
+        const newIds = new Set(
+          newCVRData[entity.keyInCVR] as readonly string[],
+        );
+        return entity.getPatchOperations(
+          trx,
+          user.id,
+          lastPullTimestamp,
+          oldCVRData,
+          newIds,
+        );
       }),
     );
 
-    changedBlocks.forEach((block) =>
-      patch.push({
-        op: "put",
-        key: `block/${block.id}`,
-        value: {
-          _tag: "block",
-          id: block.id,
-          user_id: block.user_id,
-          note_id: block.note_id,
-          type: block.type,
-          content: block.content,
-          fields: block.fields ?? {},
-          tags: block.tags,
-          links: block.links,
-          file_path: block.file_path,
-          parent_id: block.parent_id,
-          depth: block.depth,
-          order: block.order,
-          transclusions: block.transclusions,
-          version: block.version,
-          created_at: block.created_at.toISOString(),
-          updated_at: block.updated_at.toISOString(),
-        },
-      }),
-    );
+    const finalPatch = patchOperations.flat();
 
-    if (fromVersion > 0) {
-      const prevCVR = yield* Effect.tryPromise({
-        try: () =>
-          trx
-            .selectFrom("client_view_record")
-            .select("data")
-            .where("id", "=", fromVersion as ClientViewRecordId)
-            .where("user_id", "=", user.id)
-            .executeTakeFirst(),
-        catch: (cause) => new PullDatabaseError({ cause }),
-      });
-      if (prevCVR) {
-        const CvrDataSchema = Schema.Struct({
-          notes: Schema.Array(NoteIdSchema),
-          blocks: Schema.Array(BlockIdSchema),
-        });
-        const prevData = Schema.decodeUnknownSync(CvrDataSchema)(prevCVR.data);
-        const currentNoteIds = new Set(allNotes.map((n) => n.id));
-        prevData.notes.forEach((id) => {
-          if (!currentNoteIds.has(id))
-            patch.push({ op: "del", key: `note/${id}` });
-        });
-        const currentBlockIds = new Set(allBlocks.map((b) => b.id));
-        prevData.blocks.forEach((id) => {
-          if (!currentBlockIds.has(id))
-            patch.push({ op: "del", key: `block/${id}` });
-        });
-      }
-    }
-
-    return { cookie: nextVersion, lastMutationIDChanges, patch };
+    return { cookie: nextVersion, lastMutationIDChanges, patch: finalPatch };
   });
 
 /**
@@ -220,8 +146,6 @@ export const handlePull = (
     ),
   ]).pipe(
     Effect.flatMap(([db, { user }]) =>
-      // ✅ THIS IS THE FIX ✅
-      // Use Effect.tryPromise to correctly model a fallible promise.
       Effect.tryPromise({
         try: () =>
           db
@@ -229,11 +153,9 @@ export const handlePull = (
             .execute((trx) =>
               Effect.runPromise(pullLogicEffect(trx, req, user!)),
             ),
-        // The catch block types the error channel of this Effect.
         catch: (cause) => new PullDatabaseError({ cause }),
       }),
     ),
-    // Now that the effect has a typed error channel, catchTag works perfectly.
     Effect.catchTag("PullDatabaseError", (internalError) =>
       Effect.logError(
         "A database error occurred during the pull transaction.",
