@@ -11,6 +11,7 @@ import type { ReplicacheClientGroupId } from "../../types/generated/public/Repli
 import { Database } from "../../types";
 import { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
+import type { User } from "../../lib/shared/schemas";
 
 // --- Mutation Schemas ---
 const CreateNoteArgsSchema = Schema.Struct({
@@ -40,10 +41,6 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         const args = yield* _(
           Schema.decodeUnknown(CreateNoteArgsSchema)(mutation.args),
         );
-        // ✅ THIS IS THE FIX ✅
-        // Explicitly set all fields, including timestamps, to ensure the record
-        // is complete and matches what the client optimistically created.
-        // This prevents race conditions or mismatches with DB defaults.
         const now = new Date();
         const newNote: NewNote = {
           id: args.id,
@@ -102,8 +99,104 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
     }
   });
 
-// 1. Change the return type to allow an AuthError to be returned.
-// 2. Remove the internal matchEffect and let the transactionEffect propagate its failure.
+/**
+ * An Effect that encapsulates the logic for processing a batch of mutations.
+ * It expects the `Db` service in its context to be a Kysely transaction object.
+ * This function is pure and describes the transaction's steps without executing them.
+ */
+const processMutations = (
+  mutations: PushRequest["mutations"],
+  clientGroupID: PushRequest["clientGroupID"],
+  // ✅ FIX: Use the imported `User` type directly. This is cleaner and correct.
+  user: User,
+): Effect.Effect<void, Error, Db> =>
+  Effect.forEach(
+    mutations,
+    (mutation) =>
+      Effect.gen(function* (_) {
+        const trx = yield* _(Db); // Expects a transaction to be provided as the Db service
+        const { clientID, id: mutationID } = mutation;
+
+        // Get or create client state
+        let clientState = yield* _(
+          Effect.promise(() =>
+            trx
+              .selectFrom("replicache_client")
+              .selectAll()
+              .where("id", "=", clientID as ReplicacheClientId)
+              .forUpdate()
+              .executeTakeFirst(),
+          ),
+        );
+
+        if (!clientState) {
+          yield* _(
+            Effect.promise(() =>
+              trx
+                .insertInto("replicache_client")
+                .values({
+                  id: clientID as ReplicacheClientId,
+                  client_group_id: clientGroupID as ReplicacheClientGroupId,
+                  last_mutation_id: 0,
+                  updated_at: new Date(),
+                })
+                .execute(),
+            ),
+          );
+          clientState = yield* _(
+            Effect.promise(() =>
+              trx
+                .selectFrom("replicache_client")
+                .selectAll()
+                .where("id", "=", clientID as ReplicacheClientId)
+                .forUpdate()
+                .executeTakeFirstOrThrow(),
+            ),
+          );
+        }
+
+        const expectedMutationID = clientState.last_mutation_id + 1;
+
+        if (mutationID < expectedMutationID) {
+          return; // Already processed, continue
+        }
+
+        if (mutationID > expectedMutationID) {
+          return yield* _(
+            Effect.fail(
+              new Error(
+                `Mutation ${mutationID} out of order for client ${clientID}; expected ${expectedMutationID}`,
+              ),
+            ),
+          );
+        }
+
+        // Apply the specific mutation logic
+        yield* _(
+          applyMutation(mutation).pipe(
+            Effect.provideService(Auth, { user, session: null }),
+          ),
+        );
+
+        // Update the client's mutation ID
+        yield* _(
+          Effect.promise(() =>
+            trx
+              .updateTable("replicache_client")
+              .set({ last_mutation_id: mutationID })
+              .where("id", "=", clientID as ReplicacheClientId)
+              .execute(),
+          ),
+        );
+      }),
+    { concurrency: 1, discard: true }, // Process mutations sequentially
+  );
+
+/**
+ * Handles a Replicache push request by processing mutations within a database transaction.
+ * This function orchestrates getting dependencies, defining the transactional logic,
+ * executing it, and triggering a poke on success.
+ */
 export const handlePush = (
   req: PushRequest,
 ): Effect.Effect<void, AuthError, Db | Auth | PokeService> =>
@@ -124,65 +217,21 @@ export const handlePush = (
       ),
     );
 
+    // 1. Define the effect that contains our specific mutation logic.
+    const mutationsEffect = processMutations(mutations, clientGroupID, user!);
+
+    // 2. Create an effect that will run our logic within a database transaction.
     const transactionEffect = Effect.tryPromise({
       try: () =>
-        db.transaction().execute(async (trx) => {
-          for (const mutation of mutations) {
-            const { clientID, id: mutationID } = mutation;
-
-            // ✅ FIX: Implement "get or create" logic for the client state.
-            let clientState = await trx
-              .selectFrom("replicache_client")
-              .selectAll()
-              .where("id", "=", clientID as ReplicacheClientId)
-              .forUpdate()
-              .executeTakeFirst();
-
-            // If the client doesn't exist, create it.
-            if (!clientState) {
-              await trx
-                .insertInto("replicache_client")
-                .values({
-                  id: clientID as ReplicacheClientId,
-                  client_group_id: clientGroupID as ReplicacheClientGroupId, // Use clientGroupID from the request
-                  last_mutation_id: 0,
-                  updated_at: new Date(),
-                })
-                .execute();
-              // Re-fetch the newly created state to ensure we have it.
-              clientState = await trx
-                .selectFrom("replicache_client")
-                .selectAll()
-                .where("id", "=", clientID as ReplicacheClientId)
-                .forUpdate()
-                .executeTakeFirstOrThrow();
-            }
-
-            const expectedMutationID = clientState.last_mutation_id + 1;
-
-            if (mutationID < expectedMutationID) {
-              continue; // Already processed
-            }
-            if (mutationID > expectedMutationID) {
-              throw new Error(
-                `Mutation ${mutationID} out of order for client ${clientID}; expected ${expectedMutationID}`,
-              );
-            }
-
-            await Effect.runPromise(
-              applyMutation(mutation).pipe(
-                Effect.provideService(Db, trx as Kysely<Database>),
-                Effect.provideService(Auth, { user: user!, session: null }),
-              ),
-            );
-
-            await trx
-              .updateTable("replicache_client")
-              .set({ last_mutation_id: mutationID })
-              .where("id", "=", clientID as ReplicacheClientId)
-              .execute();
-          }
-        }),
+        db.transaction().execute(async (trx) =>
+          // Run the effect, providing the transaction `trx` as the `Db` service
+          // for the duration of its execution.
+          Effect.runPromise(
+            mutationsEffect.pipe(
+              Effect.provideService(Db, trx as Kysely<Database>),
+            ),
+          ),
+        ),
       catch: (cause) =>
         new AuthError({
           _tag: "InternalServerError",
@@ -191,6 +240,7 @@ export const handlePush = (
         }),
     });
 
-    yield* transactionEffect;
-    yield* pokeService.poke(user!.id);
+    // 3. Execute the transaction and then poke connected clients.
+    yield* _(transactionEffect);
+    yield* _(pokeService.poke(user!.id));
   });
