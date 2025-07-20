@@ -1,30 +1,19 @@
 // src/components/pages/profile-page.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Data, Queue, Fiber, Stream, Schema } from "effect";
+import { Effect, Data, Queue, Fiber, Stream } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import {
   authState,
   proposeAuthAction,
   type AuthModel,
 } from "../../lib/client/stores/authStore";
-import { RpcAuthClient } from "../../lib/client/rpc";
-import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
-import { NotionInput } from "../ui/notion-input";
 import styles from "./ProfilePage.module.css";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
+import "../features/change-password-form"; // Import the new component
 
 // --- Custom Error Types ---
-class PasswordsDoNotMatchError extends Data.TaggedError(
-  "PasswordsDoNotMatchError",
-) {}
-class IncorrectPasswordError extends Data.TaggedError(
-  "IncorrectPasswordError",
-) {}
-class UnknownPasswordError extends Data.TaggedError("UnknownPasswordError")<{
-  readonly cause: unknown;
-}> {}
 class AvatarUploadError extends Data.TaggedError("AvatarUploadError")<{
   readonly message: string;
   readonly cause?: unknown;
@@ -35,11 +24,8 @@ interface Model {
   auth: AuthModel;
   status: "idle" | "loading" | "success" | "error";
   message: string | null;
-  loadingAction: "upload" | "changePassword" | null;
+  loadingAction: "upload" | null;
   isChangingPassword: boolean;
-  oldPassword: string;
-  newPassword: string;
-  confirmPassword: string;
 }
 
 // --- Actions ---
@@ -49,18 +35,8 @@ type Action =
   | { type: "UPLOAD_SUCCESS"; payload: string }
   | { type: "UPLOAD_ERROR"; payload: string }
   | { type: "TOGGLE_CHANGE_PASSWORD_FORM" }
-  | { type: "UPDATE_OLD_PASSWORD"; payload: string }
-  | { type: "UPDATE_NEW_PASSWORD"; payload: string }
-  | { type: "UPDATE_CONFIRM_PASSWORD"; payload: string }
-  | { type: "CHANGE_PASSWORD_START" }
-  | { type: "CHANGE_PASSWORD_SUCCESS" }
-  | {
-      type: "CHANGE_PASSWORD_ERROR";
-      payload:
-        | PasswordsDoNotMatchError
-        | IncorrectPasswordError
-        | UnknownPasswordError;
-    };
+  | { type: "PASSWORD_CHANGE_SUCCESS" }
+  | { type: "PASSWORD_CHANGE_CANCELLED" };
 
 @customElement("profile-page")
 export class ProfilePage extends LitElement {
@@ -71,9 +47,6 @@ export class ProfilePage extends LitElement {
     message: null,
     loadingAction: null,
     isChangingPassword: false,
-    oldPassword: "",
-    newPassword: "",
-    confirmPassword: "",
   };
 
   private readonly _actionQueue = Effect.runSync(Queue.unbounded<Action>());
@@ -85,7 +58,7 @@ export class ProfilePage extends LitElement {
 
   private _handleAction = (
     action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
+  ): Effect.Effect<void, never, RpcLogClient> => {
     this.model = this._update(this.model, action);
 
     if (action.type === "UPLOAD_START") {
@@ -127,14 +100,10 @@ export class ProfilePage extends LitElement {
                 payload: json.avatarUrl,
               }),
             ),
-          // --- THIS BLOCK IS THE FIX ---
           onFailure: (error) =>
-            // First, try to log the detailed error.
             clientLog("error", "[profile-page] Avatar upload failed.", {
               error,
             }).pipe(
-              // Regardless of whether logging succeeds or fails,
-              // always propose the UI update with the user-facing message.
               Effect.andThen(
                 Effect.sync(() =>
                   this._propose({
@@ -143,8 +112,6 @@ export class ProfilePage extends LitElement {
                   }),
                 ),
               ),
-              // If logging itself fails, catch that error, log it to the console as a fallback,
-              // and STILL proceed with the UI update. This makes the entire block infallible.
               Effect.catchAll((loggingError) =>
                 Effect.sync(() => {
                   console.error(
@@ -162,67 +129,7 @@ export class ProfilePage extends LitElement {
       );
 
       return Effect.asVoid(uploadEffect);
-    } else if (action.type === "CHANGE_PASSWORD_START") {
-      const { oldPassword, newPassword, confirmPassword } = this.model;
-
-      if (newPassword !== confirmPassword) {
-        this._propose({
-          type: "CHANGE_PASSWORD_ERROR",
-          payload: new PasswordsDoNotMatchError(),
-        });
-        return Effect.void;
-      }
-
-      runClientUnscoped(
-        clientLog("debug", "[profile-page] Dispatching changePassword RPC", {
-          userId: this.model.auth.user?.id,
-          oldPasswordLength: oldPassword.length,
-          newPasswordLength: newPassword.length,
-        }),
-      );
-
-      const changePasswordEffect = Effect.gen(function* () {
-        const rpcClient = yield* RpcAuthClient;
-        return yield* rpcClient
-          .changePassword({ oldPassword, newPassword })
-          .pipe(
-            Effect.tapError((error) =>
-              clientLog(
-                "error",
-                "[profile-page] Received error from changePassword RPC",
-                { error },
-              ),
-            ),
-            Effect.catchAll((error) =>
-              Schema.decodeUnknown(AuthError)(error).pipe(
-                Effect.matchEffect({
-                  onSuccess: (authError) => {
-                    const specificError:
-                      | IncorrectPasswordError
-                      | UnknownPasswordError =
-                      authError._tag === "Unauthorized"
-                        ? new IncorrectPasswordError()
-                        : new UnknownPasswordError({ cause: authError });
-                    return Effect.fail(specificError);
-                  },
-                  onFailure: (parseError) =>
-                    Effect.fail(
-                      new UnknownPasswordError({ cause: parseError }),
-                    ),
-                }),
-              ),
-            ),
-          );
-      }).pipe(
-        Effect.match({
-          onSuccess: () => this._propose({ type: "CHANGE_PASSWORD_SUCCESS" }),
-          onFailure: (error) =>
-            this._propose({ type: "CHANGE_PASSWORD_ERROR", payload: error }),
-        }),
-      );
-      return Effect.asVoid(changePasswordEffect);
     }
-
     return Effect.void;
   };
 
@@ -264,47 +171,23 @@ export class ProfilePage extends LitElement {
           isChangingPassword: !model.isChangingPassword,
           message: null,
           status: "idle",
-          oldPassword: "",
-          newPassword: "",
-          confirmPassword: "",
         };
-      case "UPDATE_OLD_PASSWORD":
-        return { ...model, oldPassword: action.payload, message: null };
-      case "UPDATE_NEW_PASSWORD":
-        return { ...model, newPassword: action.payload, message: null };
-      case "UPDATE_CONFIRM_PASSWORD":
-        return { ...model, confirmPassword: action.payload, message: null };
-      case "CHANGE_PASSWORD_START":
+      case "PASSWORD_CHANGE_SUCCESS":
         return {
           ...model,
-          status: "loading",
-          loadingAction: "changePassword",
-          message: null,
-        };
-      case "CHANGE_PASSWORD_SUCCESS":
-        return {
-          ...model,
-          status: "success",
-          loadingAction: null,
           isChangingPassword: false,
-          oldPassword: "",
-          newPassword: "",
-          confirmPassword: "",
+          status: "success",
           message: "Password changed successfully!",
         };
-      case "CHANGE_PASSWORD_ERROR": {
-        let message = "An unknown error occurred.";
-        if (action.payload._tag === "PasswordsDoNotMatchError")
-          message = "New passwords do not match.";
-        if (action.payload._tag === "IncorrectPasswordError")
-          message = "Incorrect old password provided.";
+      case "PASSWORD_CHANGE_CANCELLED":
         return {
           ...model,
-          status: "error",
-          loadingAction: null,
-          message,
+          isChangingPassword: false,
+          status: "idle",
+          message: null,
         };
-      }
+      default:
+        return model;
     }
   }
 
@@ -345,71 +228,15 @@ export class ProfilePage extends LitElement {
       if (file) this._propose({ type: "UPLOAD_START", payload: file });
     };
 
-    const onPasswordSubmit = (e: Event) => {
-      e.preventDefault();
-      this._propose({ type: "CHANGE_PASSWORD_START" });
-    };
-
-    const passwordForm = html`
-      <form @submit=${onPasswordSubmit} class="mt-6 space-y-4 text-left">
-        ${NotionInput({
-          id: "old-password",
-          label: "Old Password",
-          type: "password",
-          value: this.model.oldPassword,
-          onInput: (e) =>
-            this._propose({
-              type: "UPDATE_OLD_PASSWORD",
-              payload: (e.target as HTMLInputElement).value,
-            }),
-          required: true,
-        })}
-        ${NotionInput({
-          id: "new-password",
-          label: "New Password",
-          type: "password",
-          value: this.model.newPassword,
-          onInput: (e) =>
-            this._propose({
-              type: "UPDATE_NEW_PASSWORD",
-              payload: (e.target as HTMLInputElement).value,
-            }),
-          required: true,
-        })}
-        ${NotionInput({
-          id: "confirm-password",
-          label: "Confirm New Password",
-          type: "password",
-          value: this.model.confirmPassword,
-          onInput: (e) =>
-            this._propose({
-              type: "UPDATE_CONFIRM_PASSWORD",
-              payload: (e.target as HTMLInputElement).value,
-            }),
-          required: true,
-        })}
-        <div class="flex items-center gap-4 pt-2">
-          ${NotionButton({
-            children: "Save Password",
-            type: "submit",
-            loading: this.model.loadingAction === "changePassword",
-            disabled: this.model.status === "loading",
-          })}
-          <button
-            type="button"
-            @click=${() =>
-              this._propose({ type: "TOGGLE_CHANGE_PASSWORD_FORM" })}
-            class="text-sm font-medium text-zinc-600 hover:text-zinc-500"
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
-    `;
-
     return html`
       <div class=${styles.container}>
-        <div class=${styles.profileCard}>
+        <div
+          class=${styles.profileCard}
+          @password-changed-success=${() =>
+            this._propose({ type: "PASSWORD_CHANGE_SUCCESS" })}
+          @change-password-cancelled=${() =>
+            this._propose({ type: "PASSWORD_CHANGE_CANCELLED" })}
+        >
           <h2 class=${styles.title}>Your Profile</h2>
           ${this.model.message
             ? html`<div
@@ -426,7 +253,7 @@ export class ProfilePage extends LitElement {
           </div>
           <div class=${styles.uploadSection}>
             ${this.model.isChangingPassword
-              ? passwordForm
+              ? html`<change-password-form></change-password-form>`
               : html`<div class="mt-4 flex flex-col items-center gap-4">
                   <input
                     type="file"
