@@ -4,19 +4,34 @@ import {
   type ReadonlyJSONValue,
   type WriteTransaction,
   type Puller,
-  type HTTPRequestInfo,
-  type PullerResultV1,
   makeIDBName,
+  type PullRequest,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
 import { NoteSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
-import { runClientUnscoped, CustomHttpClientLive } from "./runtime";
-import { PullRequestV1 } from "replicache";
+import {
+  runClientPromise,
+  runClientUnscoped,
+  CustomHttpClientLive,
+} from "./runtime";
 import { PullResponseSchema } from "../shared/replicache-schemas";
 import { clientLog } from "./clientLog";
 import { RpcLogClientLive } from "./rpc";
+
+// ✅ FIX 1: Define a custom error class for HTTP-specific pull errors.
+class PullerHttpError extends Error {
+  httpStatusCode: number;
+  errorMessage: string;
+
+  constructor(message: string, statusCode: number, responseText: string) {
+    super(message);
+    this.name = "PullerHttpError";
+    this.httpStatusCode = statusCode;
+    this.errorMessage = responseText;
+  }
+}
 
 const mutators = {
   createNote: async (
@@ -76,47 +91,67 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-const debugPuller: Puller = (async (
-  request: PullRequestV1,
-): Promise<PullerResultV1> => {
-  try {
-    const body = {
-      clientGroupID: request.clientGroupID,
-      cookie: request.cookie,
-      schemaVersion: request.schemaVersion,
-      clientID: (request as unknown as { clientID: string }).clientID,
-    };
-    const response = await fetch("/api/replicache/pull", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const responseText = await response.text();
-    const httpRequestInfo: HTTPRequestInfo = {
-      httpStatusCode: response.status,
-      errorMessage: response.ok ? "" : responseText,
-    };
-    if (!response.ok) {
-      return { response: undefined, httpRequestInfo };
-    }
-    const pullResponseV1 = Schema.decodeUnknownSync(PullResponseSchema)(
-      JSON.parse(responseText),
-    );
-    return { response: pullResponseV1, httpRequestInfo };
-  } catch (e) {
-    runClientUnscoped(
-      clientLog("error", "Replicache puller caught an unexpected exception.", {
-        error: e,
-      }),
-    );
-    const errorMsg = e instanceof Error ? e.message : "Unknown puller error";
-    const httpRequestInfo: HTTPRequestInfo = {
-      httpStatusCode: 0,
-      errorMessage: errorMsg,
-    };
-    return { response: undefined, httpRequestInfo };
-  }
-}) as Puller;
+const debugPuller: Puller = (request: PullRequest) => {
+  const pullEffect = Effect.tryPromise({
+    try: async () => {
+      if (!("clientGroupID" in request)) {
+        throw new Error(
+          `PullRequestV0 is not supported. Request: ${JSON.stringify(request)}`,
+        );
+      }
+
+      const body = {
+        clientGroupID: request.clientGroupID,
+        cookie: request.cookie,
+      };
+      const response = await fetch("/api/replicache/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        // ✅ FIX 2: Throw an instance of our new error class.
+        throw new PullerHttpError(
+          `HTTP Error: ${response.status}`,
+          response.status,
+          responseText,
+        );
+      }
+
+      const pullResponse = Schema.decodeUnknownSync(PullResponseSchema)(
+        JSON.parse(responseText),
+      );
+
+      return {
+        response: pullResponse,
+        httpRequestInfo: {
+          httpStatusCode: response.status,
+          errorMessage: "",
+        },
+      };
+    },
+    catch: (error: unknown) => {
+      let httpStatusCode = 0;
+      let errorMessage = "Unknown puller error";
+
+      if (error instanceof PullerHttpError) {
+        httpStatusCode = error.httpStatusCode;
+        errorMessage = error.errorMessage;
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        response: undefined,
+        httpRequestInfo: { httpStatusCode, errorMessage },
+      };
+    },
+  });
+
+  return runClientPromise(pullEffect);
+};
 
 export const ReplicacheLive = (
   user: PublicUser,
@@ -127,7 +162,6 @@ export const ReplicacheLive = (
   );
   const replicacheServiceEffect = Effect.acquireRelease(
     Effect.gen(function* () {
-      // --- NEW LOGIC: Proactively delete old databases before initializing ---
       const userDbName = makeIDBName(user.id);
       const metaDbName = "replicache-dbs-v0";
 
@@ -151,26 +185,21 @@ export const ReplicacheLive = (
         `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
       );
 
-      // We run the deletions and ignore any errors (e.g., if they don't exist on first login)
       yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
         concurrency: "unbounded",
         discard: true,
       }).pipe(Effect.catchAll(() => Effect.void));
-      // --- END OF NEW LOGIC ---
 
-      // Now, we can safely create the new Replicache instance
       const client = new Replicache({
         licenseKey: "l2c75a896d85a4914a51e54a32338b556",
-        name: user.id, // Use user.id which is stable
+        name: user.id,
         pushURL: "/api/replicache/push",
         puller: debugPuller,
         mutators,
       });
-
       const ws = yield* setupWebSocket(client).pipe(Effect.orDie);
       return { client, ws };
     }),
-    // --- SIMPLIFIED RELEASE: Deletion logic has been moved to the acquire step ---
     ({ client, ws }) =>
       Effect.gen(function* () {
         yield* clientLog(
