@@ -1,8 +1,8 @@
 // FILE: ./src/components/pages/notes-page.ts
 import { LitElement, html } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { runClientUnscoped, runClientPromise } from "../../lib/client/runtime";
 import { ReplicacheService } from "../../lib/client/replicache";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
@@ -10,69 +10,170 @@ import { navigate } from "../../lib/client/router";
 import { NotionButton } from "../ui/notion-button";
 import styles from "./NotesView.module.css";
 import { NoteSchema, type Note, type NoteId } from "../../lib/shared/schemas";
-import { clientLog } from "../../lib/client/clientLog";
+import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import { v4 as uuidv4 } from "uuid";
+import { SamController } from "../../lib/client/sam-controller";
+import type { LocationService } from "../../lib/client/LocationService";
+// ✅ 1. Import the specific type from Replicache
+import type { ReadonlyJSONValue } from "replicache";
+
+// --- Model ---
+interface Model {
+  notes: Note[];
+  isCreating: boolean;
+}
+
+// --- Actions ---
+type Action =
+  | { type: "NOTES_UPDATED"; payload: Note[] }
+  | { type: "CREATE_NOTE_START" }
+  | { type: "CREATE_NOTE_COMPLETE" } // Used to reset loading state
+  | { type: "DELETE_NOTE"; payload: NoteId };
+
+// --- Pure Update Function ---
+const update = (model: Model, action: Action): Model => {
+  switch (action.type) {
+    case "NOTES_UPDATED":
+      return {
+        ...model,
+        notes: action.payload.sort(
+          (a, b) =>
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+        ),
+      };
+    case "CREATE_NOTE_START":
+      return { ...model, isCreating: true };
+    case "CREATE_NOTE_COMPLETE":
+      return { ...model, isCreating: false };
+    case "DELETE_NOTE":
+      // The actual deletion from the list will happen reactively
+      // when Replicache triggers a NOTES_UPDATED action.
+      // This action is just for triggering the side effect.
+      return model;
+  }
+};
+
+// --- Effectful Action Handler ---
+const handleAction = (
+  action: Action,
+  _model: Model,
+  propose: (a: Action) => void,
+): Effect.Effect<
+  void,
+  never,
+  ReplicacheService | RpcLogClient | LocationService
+> => {
+  switch (action.type) {
+    case "CREATE_NOTE_START": {
+      const createEffect = Effect.gen(function* () {
+        const replicache = yield* ReplicacheService;
+        const user = authState.value.user!;
+        const newNoteId = uuidv4() as NoteId;
+        yield* Effect.promise(() =>
+          replicache.client.mutate.createNote({
+            id: newNoteId,
+            userID: user.id,
+            title: "Untitled Note",
+          }),
+        );
+        yield* navigate(`/notes/${newNoteId}`);
+      });
+
+      return createEffect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => propose({ type: "CREATE_NOTE_COMPLETE" })),
+        ),
+        Effect.catchAll((err) =>
+          clientLog("error", "[NotesPage] Failed to create note", err),
+        ),
+      );
+    }
+
+    case "DELETE_NOTE": {
+      return Effect.gen(function* () {
+        const replicache = yield* ReplicacheService;
+        yield* Effect.promise(() =>
+          replicache.client.mutate.deleteNote({ id: action.payload }),
+        );
+      }).pipe(
+        Effect.catchAll((err) =>
+          clientLog(
+            "error",
+            `[NotesPage] Failed to delete note ${action.payload}`,
+            err,
+          ),
+        ),
+      );
+    }
+    default:
+      return Effect.void;
+  }
+};
 
 @customElement("notes-page")
 export class NotesPage extends LitElement {
-  @state() private _notes: Note[] = [];
-  @state() private _isCreating = false;
-  // ✅ FIX: Add a flag to prevent re-initialization.
-  @state() private _isInitialized = false;
-
-  private _replicacheUnsubscribe: (() => void) | undefined;
-  // ✅ FIX: Add a dedicated unsubscribe for the auth state.
-  private _authUnsubscribe: (() => void) | undefined;
-
-  private readonly _connectedEffect = Effect.gen(
-    function* (this: NotesPage) {
-      yield* clientLog(
-        "info",
-        "[NotesPage] Component connected, initializing.",
-      );
-      const replicache = yield* ReplicacheService;
-      this._replicacheUnsubscribe = replicache.client.subscribe(
-        async (tx) => {
-          const noteJSONs = await tx
-            .scan({ prefix: "note/" })
-            .values()
-            .toArray();
-          return noteJSONs.flatMap((json) =>
-            Schema.decodeUnknownOption(NoteSchema)(json).pipe((o) =>
-              o._tag === "Some" ? [o.value] : [],
-            ),
-          );
-        },
-        (notes: Note[]) => {
-          this._notes = notes.sort(
-            (a, b) =>
-              new Date(b.updated_at).getTime() -
-              new Date(a.updated_at).getTime(),
-          );
-        },
-      );
-    }.bind(this),
+  private ctrl = new SamController<this, Model, Action, never>(
+    this,
+    { notes: [], isCreating: false },
+    update,
+    handleAction,
   );
 
-  // ✅ FIX: Replace the racy connectedCallback with a robust subscription.
+  private _isInitialized = false;
+  private _replicacheUnsubscribe: (() => void) | undefined;
+  private _authUnsubscribe: (() => void) | undefined;
+
+  private _initializeReplicacheSubscription() {
+    const initEffect = Effect.gen(
+      function* (this: NotesPage) {
+        yield* clientLog(
+          "info",
+          "[NotesPage] Component connected, initializing Replicache subscription.",
+        );
+        const replicache = yield* ReplicacheService;
+
+        // Unsubscribe from any previous subscription before creating a new one
+        this._replicacheUnsubscribe?.();
+
+        this._replicacheUnsubscribe = replicache.client.subscribe(
+          // 1. The "query" function: simply returns raw JSON data from the cache.
+          async (tx) => {
+            const noteJSONs = await tx
+              .scan({ prefix: "note/" })
+              .values()
+              .toArray();
+            return noteJSONs;
+          },
+          // 2. The "onData" callback with the correct type.
+          // ✅ FIX: Replace `any[]` with `ReadonlyJSONValue[]` for type safety.
+          (noteJSONs: ReadonlyJSONValue[]) => {
+            const notes: Note[] = noteJSONs.flatMap((json) => {
+              const option = Schema.decodeUnknownOption(NoteSchema)(json);
+              return Option.isSome(option) ? [option.value] : [];
+            });
+
+            this.ctrl.propose({ type: "NOTES_UPDATED", payload: notes });
+          },
+        );
+      }.bind(this),
+    );
+    void runClientPromise(initEffect);
+  }
+
   override connectedCallback() {
     super.connectedCallback();
 
     const handleAuthChange = (auth: AuthModel) => {
-      // Only initialize if we are authenticated and haven't already.
       if (auth.status === "authenticated" && !this._isInitialized) {
         this._isInitialized = true;
-        void runClientPromise(this._connectedEffect);
-      }
-      // If the user logs out, reset the component's state.
-      else if (auth.status !== "authenticated" && this._isInitialized) {
+        this._initializeReplicacheSubscription();
+      } else if (auth.status !== "authenticated" && this._isInitialized) {
         this._isInitialized = false;
         this._replicacheUnsubscribe?.();
-        this._notes = [];
+        this.ctrl.propose({ type: "NOTES_UPDATED", payload: [] }); // Clear notes
       }
     };
 
-    // Subscribe to the auth state and immediately run the handler.
     this._authUnsubscribe = authState.subscribe(handleAuthChange);
     handleAuthChange(authState.value);
   }
@@ -80,50 +181,17 @@ export class NotesPage extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._replicacheUnsubscribe?.();
-    // ✅ FIX: Unsubscribe from the auth store on disconnect.
     this._authUnsubscribe?.();
     runClientUnscoped(clientLog("info", "[NotesPage] Component disconnected."));
   }
 
-  private _deleteNote(noteId: NoteId) {
-    const deleteEffect = Effect.gen(function* () {
-      const replicache = yield* ReplicacheService;
-      yield* Effect.promise(() =>
-        replicache.client.mutate.deleteNote({ id: noteId }),
-      );
-    });
-    void runClientPromise(deleteEffect);
+  protected override createRenderRoot() {
+    return this;
   }
 
-  private _createNewNote() {
-    this._isCreating = true;
-    const createEffect = Effect.gen(function* () {
-      const replicache = yield* ReplicacheService;
-      const user = authState.value.user!;
-      const newNoteId = uuidv4() as NoteId;
-      yield* Effect.promise(() =>
-        replicache.client.mutate.createNote({
-          id: newNoteId,
-          userID: user.id,
-          title: "Untitled Note",
-        }),
-      );
-      return yield* navigate(`/notes/${newNoteId}`);
-    });
-
-    const finalEffect = createEffect.pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          this._isCreating = false;
-        }),
-      ),
-      Effect.catchAll((err) =>
-        clientLog("error", "[NotesPage] Failed to create note", err),
-      ),
-    );
-    void runClientPromise(finalEffect);
-  }
   override render() {
+    const { notes, isCreating } = this.ctrl.model;
+
     return html`
       <div class=${styles.container}>
         <div class=${styles.header}>
@@ -135,16 +203,16 @@ export class NotesPage extends LitElement {
           </div>
           <div class=${styles.actions}>
             ${NotionButton({
-              children: this._isCreating ? "Creating..." : "Create New Note",
-              onClick: () => this._createNewNote(),
-              loading: this._isCreating,
+              children: isCreating ? "Creating..." : "Create New Note",
+              onClick: () => this.ctrl.propose({ type: "CREATE_NOTE_START" }),
+              loading: isCreating,
             })}
           </div>
         </div>
         <div class=${styles.notesList}>
-          ${this._notes.length > 0
+          ${notes.length > 0
             ? repeat(
-                this._notes,
+                notes,
                 (note) => note.id,
                 (note) => html`
                   <div class="group relative">
@@ -165,7 +233,11 @@ export class NotesPage extends LitElement {
                       </p>
                     </a>
                     <button
-                      @click=${() => this._deleteNote(note.id)}
+                      @click=${() =>
+                        this.ctrl.propose({
+                          type: "DELETE_NOTE",
+                          payload: note.id,
+                        })}
                       class="absolute top-3 right-3 z-10 hidden rounded-full bg-white p-1.5 text-zinc-500 shadow-sm transition-all group-hover:block hover:bg-red-50 hover:text-red-600"
                       aria-label="Delete note"
                     >
