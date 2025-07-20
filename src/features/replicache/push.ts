@@ -1,5 +1,5 @@
 // src/features/replicache/push.ts
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Data } from "effect";
 import type { PushRequest } from "../../lib/shared/replicache-schemas";
 import { sql } from "kysely";
 import { Db } from "../../db/DbTag";
@@ -12,6 +12,11 @@ import { Database } from "../../types";
 import { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
 import type { User } from "../../lib/shared/schemas";
+
+// ✅ FIX 1: Introduce a specific, rich error type for internal push operations.
+class PushTransactionError extends Data.TaggedError("PushTransactionError")<{
+  readonly cause: unknown;
+}> {}
 
 // --- Mutation Schemas ---
 const CreateNoteArgsSchema = Schema.Struct({
@@ -30,7 +35,7 @@ const DeleteNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
 });
 
-// --- Mutation Logic ---
+// --- Mutation Logic (No changes needed here) ---
 const applyMutation = (mutation: PushRequest["mutations"][number]) =>
   Effect.gen(function* (_) {
     const db = yield* _(Db);
@@ -107,7 +112,6 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
 const processMutations = (
   mutations: PushRequest["mutations"],
   clientGroupID: PushRequest["clientGroupID"],
-  // ✅ FIX: Use the imported `User` type directly. This is cleaner and correct.
   user: User,
 ): Effect.Effect<void, Error, Db> =>
   Effect.forEach(
@@ -217,30 +221,45 @@ export const handlePush = (
       ),
     );
 
-    // 1. Define the effect that contains our specific mutation logic.
     const mutationsEffect = processMutations(mutations, clientGroupID, user!);
 
-    // 2. Create an effect that will run our logic within a database transaction.
+    // ✅ FIX 2: Use Effect.tryPromise to correctly model a fallible operation.
+    // The `catch` block now wraps the original error in our rich internal error type.
     const transactionEffect = Effect.tryPromise({
       try: () =>
-        db.transaction().execute(async (trx) =>
-          // Run the effect, providing the transaction `trx` as the `Db` service
-          // for the duration of its execution.
-          Effect.runPromise(
-            mutationsEffect.pipe(
-              Effect.provideService(Db, trx as Kysely<Database>),
+        db
+          .transaction()
+          .execute(async (trx) =>
+            Effect.runPromise(
+              mutationsEffect.pipe(
+                Effect.provideService(Db, trx as Kysely<Database>),
+              ),
+            ),
+          ),
+      catch: (cause) => new PushTransactionError({ cause }),
+    });
+
+    // ✅ FIX 3: Catch our specific internal error, log it, and then fail with a generic public error.
+    yield* _(
+      transactionEffect.pipe(
+        Effect.catchTag("PushTransactionError", (internalError) =>
+          // 1. Log the full, detailed error for debugging.
+          Effect.logError("Push transaction failed with an error.", {
+            error: internalError,
+          }).pipe(
+            // 2. Map it to a generic, safe error to send to the client.
+            Effect.andThen(
+              Effect.fail(
+                new AuthError({
+                  _tag: "InternalServerError",
+                  message: "Your changes could not be saved.",
+                }),
+              ),
             ),
           ),
         ),
-      catch: (cause) =>
-        new AuthError({
-          _tag: "InternalServerError",
-          message:
-            cause instanceof Error ? cause.message : "Transaction failed",
-        }),
-    });
+      ),
+    );
 
-    // 3. Execute the transaction and then poke connected clients.
-    yield* _(transactionEffect);
     yield* _(pokeService.poke(user!.id));
   });

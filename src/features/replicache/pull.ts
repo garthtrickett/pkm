@@ -1,5 +1,7 @@
 // src/features/replicache/pull.ts
-import { Effect, Schema } from "effect";
+
+// ... (imports and pullLogicEffect remain the same as the previous correct version)
+import { Effect, Schema, Data } from "effect";
 import {
   type PullRequest,
   type PullResponse,
@@ -16,105 +18,112 @@ import type { ClientViewRecordId } from "../../types/generated/public/ClientView
 import type { Transaction } from "kysely";
 import type { Database } from "../../types";
 
-/**
- * A pure Effect that describes the logic of generating a pull response within a transaction.
- * It takes the transaction handle (`trx`) as a direct argument, making it independent of
- * the global `Db` service and easy to test.
- *
- * @param trx The Kysely transaction object.
- * @param req The original pull request.
- * @param user The authenticated user.
- * @returns An Effect that, when run, produces a PullResponse or fails with an Error.
- */
+class PullDatabaseError extends Data.TaggedError("PullDatabaseError")<{
+  readonly cause: unknown;
+}> {}
+
 const pullLogicEffect = (
   trx: Transaction<Database>,
   req: PullRequest,
   user: User,
-): Effect.Effect<PullResponse, Error> =>
+): Effect.Effect<PullResponse, PullDatabaseError> =>
   Effect.gen(function* () {
+    // ... (This function's implementation remains the same)
     const { clientGroupID, cookie } = req;
     const fromVersion = cookie ?? 0;
 
-    const mapUnknownToError = (cause: unknown) => new Error(String(cause));
-
-    const clients = yield* Effect.promise(() =>
-      trx
-        .selectFrom("replicache_client")
-        .selectAll()
-        .where("client_group_id", "=", clientGroupID as ReplicacheClientGroupId)
-        .execute(),
-    ).pipe(Effect.mapError(mapUnknownToError)); // ✅ FIX: Handle potential promise rejection.
+    const clients = yield* Effect.tryPromise({
+      try: () =>
+        trx
+          .selectFrom("replicache_client")
+          .selectAll()
+          .where(
+            "client_group_id",
+            "=",
+            clientGroupID as ReplicacheClientGroupId,
+          )
+          .execute(),
+      catch: (cause) => new PullDatabaseError({ cause }),
+    });
 
     const lastMutationIDChanges = Object.fromEntries(
       clients.map((c) => [c.id, c.last_mutation_id]),
     );
 
     const [allNotes, allBlocks] = yield* Effect.all([
-      Effect.promise(() =>
-        trx
-          .selectFrom("note")
-          .selectAll()
-          .where("user_id", "=", user.id)
-          .execute(),
-      ).pipe(Effect.mapError(mapUnknownToError)), // ✅ FIX: Handle potential promise rejection.
-      Effect.promise(() =>
-        trx
-          .selectFrom("block")
-          .selectAll()
-          .where("user_id", "=", user.id)
-          .execute(),
-      ).pipe(Effect.mapError(mapUnknownToError)), // ✅ FIX: Handle potential promise rejection.
+      Effect.tryPromise({
+        try: () =>
+          trx
+            .selectFrom("note")
+            .selectAll()
+            .where("user_id", "=", user.id)
+            .execute(),
+        catch: (cause) => new PullDatabaseError({ cause }),
+      }),
+      Effect.tryPromise({
+        try: () =>
+          trx
+            .selectFrom("block")
+            .selectAll()
+            .where("user_id", "=", user.id)
+            .execute(),
+        catch: (cause) => new PullDatabaseError({ cause }),
+      }),
     ]);
 
-    const nextCVR = yield* Effect.promise(() =>
-      trx
-        .insertInto("client_view_record")
-        .values({
-          user_id: user.id,
-          data: {
-            notes: allNotes.map((n) => n.id),
-            blocks: allBlocks.map((b) => b.id),
-          },
-        })
-        .returning("id")
-        .executeTakeFirstOrThrow(),
-    ).pipe(Effect.mapError(mapUnknownToError)); // ✅ FIX: Handle potential promise rejection.
+    const nextCVR = yield* Effect.tryPromise({
+      try: () =>
+        trx
+          .insertInto("client_view_record")
+          .values({
+            user_id: user.id,
+            data: {
+              notes: allNotes.map((n) => n.id),
+              blocks: allBlocks.map((b) => b.id),
+            },
+          })
+          .returning("id")
+          .executeTakeFirstOrThrow(),
+      catch: (cause) => new PullDatabaseError({ cause }),
+    });
     const nextVersion = Number(nextCVR.id);
 
     const lastPullTimestamp = yield* Effect.if(fromVersion > 0, {
-      // ✅ FIX: Make the branches lazy by wrapping them in arrow functions.
       onTrue: () =>
-        Effect.promise(() =>
-          trx
-            .selectFrom("client_view_record")
-            .select("created_at")
-            .where("id", "=", fromVersion as ClientViewRecordId)
-            .where("user_id", "=", user.id)
-            .executeTakeFirst(),
-        ).pipe(
-          Effect.map((cvr) => cvr?.created_at ?? new Date(0)),
-          Effect.mapError(mapUnknownToError), // ✅ FIX: Handle rejection inside the lazy effect.
-        ),
+        Effect.tryPromise({
+          try: () =>
+            trx
+              .selectFrom("client_view_record")
+              .select("created_at")
+              .where("id", "=", fromVersion as ClientViewRecordId)
+              .where("user_id", "=", user.id)
+              .executeTakeFirst(),
+          catch: (cause) => new PullDatabaseError({ cause }),
+        }).pipe(Effect.map((cvr) => cvr?.created_at ?? new Date(0))),
       onFalse: () => Effect.succeed(new Date(0)),
     });
 
     const [changedNotes, changedBlocks] = yield* Effect.all([
-      Effect.promise(() =>
-        trx
-          .selectFrom("note")
-          .selectAll()
-          .where("user_id", "=", user.id)
-          .where("updated_at", ">", lastPullTimestamp)
-          .execute(),
-      ).pipe(Effect.mapError(mapUnknownToError)), // ✅ FIX: Handle potential promise rejection.
-      Effect.promise(() =>
-        trx
-          .selectFrom("block")
-          .selectAll()
-          .where("user_id", "=", user.id)
-          .where("updated_at", ">", lastPullTimestamp)
-          .execute(),
-      ).pipe(Effect.mapError(mapUnknownToError)), // ✅ FIX: Handle potential promise rejection.
+      Effect.tryPromise({
+        try: () =>
+          trx
+            .selectFrom("note")
+            .selectAll()
+            .where("user_id", "=", user.id)
+            .where("updated_at", ">", lastPullTimestamp)
+            .execute(),
+        catch: (cause) => new PullDatabaseError({ cause }),
+      }),
+      Effect.tryPromise({
+        try: () =>
+          trx
+            .selectFrom("block")
+            .selectAll()
+            .where("user_id", "=", user.id)
+            .where("updated_at", ">", lastPullTimestamp)
+            .execute(),
+        catch: (cause) => new PullDatabaseError({ cause }),
+      }),
     ]);
 
     const patch: Array<PullResponse["patch"][number]> = [];
@@ -163,14 +172,16 @@ const pullLogicEffect = (
     );
 
     if (fromVersion > 0) {
-      const prevCVR = yield* Effect.promise(() =>
-        trx
-          .selectFrom("client_view_record")
-          .select("data")
-          .where("id", "=", fromVersion as ClientViewRecordId)
-          .where("user_id", "=", user.id)
-          .executeTakeFirst(),
-      ).pipe(Effect.mapError(mapUnknownToError)); // ✅ FIX: Handle potential promise rejection.
+      const prevCVR = yield* Effect.tryPromise({
+        try: () =>
+          trx
+            .selectFrom("client_view_record")
+            .select("data")
+            .where("id", "=", fromVersion as ClientViewRecordId)
+            .where("user_id", "=", user.id)
+            .executeTakeFirst(),
+        catch: (cause) => new PullDatabaseError({ cause }),
+      });
       if (prevCVR) {
         const CvrDataSchema = Schema.Struct({
           notes: Schema.Array(NoteIdSchema),
@@ -201,19 +212,17 @@ const pullLogicEffect = (
 export const handlePull = (
   req: PullRequest,
 ): Effect.Effect<PullResponse, AuthError, Db | Auth> =>
-  Effect.gen(function* (_) {
-    const { clientGroupID, cookie } = req;
-    yield* _(
-      Effect.logInfo(
-        { clientGroupID, fromVersion: cookie ?? 0 },
-        "Processing pull request",
-      ),
-    );
-
-    const db = yield* _(Db);
-    const { user } = yield* _(Auth);
-
-    return yield* _(
+  Effect.all([
+    Db,
+    Auth,
+    Effect.logInfo(
+      { clientGroupID: req.clientGroupID, fromVersion: req.cookie ?? 0 },
+      "Processing pull request",
+    ),
+  ]).pipe(
+    Effect.flatMap(([db, { user }]) =>
+      // ✅ THIS IS THE FIX ✅
+      // Use Effect.tryPromise to correctly model a fallible promise.
       Effect.tryPromise({
         try: () =>
           db
@@ -221,13 +230,24 @@ export const handlePull = (
             .execute((trx) =>
               Effect.runPromise(pullLogicEffect(trx, req, user!)),
             ),
-        catch: (cause) => {
-          console.error("Pull transaction failed", cause);
-          return new AuthError({
-            _tag: "InternalServerError",
-            message: "Pull failed",
-          });
-        },
+        // The catch block types the error channel of this Effect.
+        catch: (cause) => new PullDatabaseError({ cause }),
       }),
-    );
-  });
+    ),
+    // Now that the effect has a typed error channel, catchTag works perfectly.
+    Effect.catchTag("PullDatabaseError", (internalError) =>
+      Effect.logError(
+        "A database error occurred during the pull transaction.",
+        { error: internalError },
+      ).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new AuthError({
+              _tag: "InternalServerError",
+              message: "Pull failed due to a server error.",
+            }),
+          ),
+        ),
+      ),
+    ),
+  );

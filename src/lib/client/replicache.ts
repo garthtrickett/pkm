@@ -5,7 +5,6 @@ import {
   type WriteTransaction,
   type Puller,
   type HTTPRequestInfo,
-  // ✅ Import the specific V1 result type
   type PullerResultV1,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
@@ -15,6 +14,8 @@ import { setupWebSocket } from "./replicache/websocket";
 import { runClientUnscoped } from "./runtime";
 import { PullRequestV1 } from "replicache";
 import { PullResponseSchema } from "../shared/replicache-schemas";
+// ✅ FIX 1: Import the client logger
+import { clientLog } from "./clientLog";
 
 // --- Mutators (unchanged) ---
 const mutators = {
@@ -76,7 +77,6 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-// ✅ FIX: Define the puller with a specific V1 return type, then cast it.
 const debugPuller: Puller = (async (
   request: PullRequestV1,
 ): Promise<PullerResultV1> => {
@@ -85,8 +85,6 @@ const debugPuller: Puller = (async (
       clientGroupID: request.clientGroupID,
       cookie: request.cookie,
       schemaVersion: request.schemaVersion,
-      // The `request` object has `clientID` at runtime, but not in its type.
-      // We add it to the body object that gets sent to the server.
       clientID: (request as unknown as { clientID: string }).clientID,
     };
 
@@ -104,7 +102,6 @@ const debugPuller: Puller = (async (
     };
 
     if (!response.ok) {
-      // On failure, return an undefined response as required by the type.
       return { response: undefined, httpRequestInfo };
     }
 
@@ -112,18 +109,26 @@ const debugPuller: Puller = (async (
       JSON.parse(responseText),
     );
 
-    // This object now perfectly matches the PullResponseV1 shape.
     return { response: pullResponseV1, httpRequestInfo };
   } catch (e) {
+    // ✅ FIX 2: Log the full error object using the client logger.
+    // We use `runClientUnscoped` to "fire-and-forget" this logging Effect
+    // from within the plain async catch block.
+    runClientUnscoped(
+      clientLog("error", "Replicache puller caught an unexpected exception.", {
+        error: e,
+      }),
+    );
+
+    // The rest of the logic remains the same to satisfy Replicache's contract.
     const errorMsg = e instanceof Error ? e.message : "Unknown puller error";
     const httpRequestInfo: HTTPRequestInfo = {
       httpStatusCode: 0,
       errorMessage: errorMsg,
     };
-    // On exception, also return with an undefined response.
     return { response: undefined, httpRequestInfo };
   }
-}) as Puller; // The type assertion happens here.
+}) as Puller;
 
 export const ReplicacheLive = (
   user: PublicUser,
