@@ -49,13 +49,11 @@ export const handlePull = (
               .selectAll()
               .where("user_id", "=", user!.id)
               .execute();
-
             const allBlocks = await trx
               .selectFrom("block")
               .selectAll()
               .where("user_id", "=", user!.id)
               .execute();
-
             // Create a new Client View Record (CVR) for this sync and get its version (ID).
             const nextCVR = await trx
               .insertInto("client_view_record")
@@ -68,23 +66,38 @@ export const handlePull = (
               })
               .returning("id")
               .executeTakeFirstOrThrow();
-
             const nextVersion = Number(nextCVR.id);
 
-            // Find all entities that have changed since the client's last pull.
+            // --- THIS IS THE FIX ---
+            // 1. Get the timestamp of the last pull. If it's the first pull, use the epoch.
+            let lastPullTimestamp = new Date(0);
+            if (fromVersion > 0) {
+              const prevCVR = await trx
+                .selectFrom("client_view_record")
+                .select("created_at")
+                .where("id", "=", fromVersion as ClientViewRecordId)
+                .where("user_id", "=", user!.id)
+                .executeTakeFirst();
+
+              if (prevCVR) {
+                lastPullTimestamp = prevCVR.created_at;
+              }
+            }
+
+            // 2. Find all entities that have changed since the client's last pull timestamp.
             const changedNotes = await trx
               .selectFrom("note")
               .selectAll()
               .where("user_id", "=", user!.id)
-              .where("version", ">", fromVersion)
+              .where("updated_at", ">", lastPullTimestamp)
               .execute();
-
             const changedBlocks = await trx
               .selectFrom("block")
               .selectAll()
               .where("user_id", "=", user!.id)
-              .where("version", ">", fromVersion)
+              .where("updated_at", ">", lastPullTimestamp)
               .execute();
+            // --- END OF FIX ---
 
             const patch: Array<PullResponse["patch"][number]> = [];
 
