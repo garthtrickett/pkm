@@ -1,7 +1,7 @@
 // src/components/pages/signup-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement } from "lit/decorators.js";
-import { Effect, Data, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
@@ -12,30 +12,24 @@ import styles from "./SignupPage.module.css";
 import { SamController } from "../../lib/client/sam-controller";
 import { clientLog } from "../../lib/client/clientLog";
 import type { LocationService } from "../../lib/client/LocationService";
+// ✅ 1. Import the new typed errors
+import {
+  PasswordsDoNotMatchError,
+  EmailInUseError,
+  UnknownAuthError,
+  type SignupError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {
   email: string;
   password: string;
   confirmPassword: string;
-  error: string | null;
+  // ✅ 2. Use the typed error union
+  error: SignupError | null;
   isLoading: boolean;
   isSuccess: boolean;
 }
-
-// --- Custom Error Types ---
-class PasswordsDoNotMatchError extends Data.TaggedError(
-  "PasswordsDoNotMatchError",
-) {}
-class EmailInUseError extends Data.TaggedError("EmailInUseError") {}
-class UnknownSignupError extends Data.TaggedError("UnknownSignupError")<{
-  readonly cause: unknown;
-}> {}
-
-type SignupActionError =
-  | PasswordsDoNotMatchError
-  | EmailInUseError
-  | UnknownSignupError;
 
 // --- Actions ---
 type Action =
@@ -44,7 +38,8 @@ type Action =
   | { type: "UPDATE_CONFIRM_PASSWORD"; payload: string }
   | { type: "SIGNUP_START" }
   | { type: "SIGNUP_SUCCESS" }
-  | { type: "SIGNUP_ERROR"; payload: string };
+  // ✅ 3. The error payload is now a typed error object
+  | { type: "SIGNUP_ERROR"; payload: SignupError };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
@@ -60,6 +55,7 @@ const update = (model: Model, action: Action): Model => {
     case "SIGNUP_SUCCESS":
       return { ...model, isLoading: false, isSuccess: true };
     case "SIGNUP_ERROR":
+      // ✅ 4. Store the actual error object in the model
       return { ...model, isLoading: false, error: action.payload };
   }
 };
@@ -77,34 +73,34 @@ const handleAction = (
   if (action.type === "SIGNUP_START") {
     const { email, password, confirmPassword } = model;
 
-    const signupEffect: Effect.Effect<
-      unknown,
-      SignupActionError,
-      RpcAuthClient
-    > = Effect.gen(function* () {
-      if (password !== confirmPassword) {
-        return yield* Effect.fail(new PasswordsDoNotMatchError());
-      }
-      const rpcClient = yield* RpcAuthClient;
-      return yield* rpcClient.signup({ email, password }).pipe(
-        Effect.catchAll((error) =>
-          Schema.decodeUnknown(AuthError)(error).pipe(
-            Effect.matchEffect({
-              onSuccess: (authError) => {
-                const specificError: SignupActionError =
-                  authError._tag === "EmailAlreadyExistsError"
-                    ? new EmailInUseError()
-                    : new UnknownSignupError({ cause: authError });
-                return Effect.fail(specificError);
-              },
-              onFailure: (parseError) =>
-                Effect.fail(new UnknownSignupError({ cause: parseError })),
-            }),
+    // ✅ 5. Define an effect for the core logic that can FAIL with our typed errors.
+    const signupEffect: Effect.Effect<unknown, SignupError, RpcAuthClient> =
+      Effect.gen(function* () {
+        if (password !== confirmPassword) {
+          return yield* Effect.fail(new PasswordsDoNotMatchError());
+        }
+        const rpcClient = yield* RpcAuthClient;
+        // Map the backend's AuthError to our specific, typed client errors
+        return yield* rpcClient.signup({ email, password }).pipe(
+          Effect.catchAll((error) =>
+            Schema.decodeUnknown(AuthError)(error).pipe(
+              Effect.matchEffect({
+                onSuccess: (authError) => {
+                  const specificError: SignupError =
+                    authError._tag === "EmailAlreadyExistsError"
+                      ? new EmailInUseError()
+                      : new UnknownAuthError({ cause: authError });
+                  return Effect.fail(specificError);
+                },
+                onFailure: (parseError) =>
+                  Effect.fail(new UnknownAuthError({ cause: parseError })),
+              }),
+            ),
           ),
-        ),
-      );
-    });
+        );
+      });
 
+    // ✅ 6. Execute the logic and handle the success/failure at the edge.
     return signupEffect.pipe(
       Effect.matchEffect({
         onSuccess: () =>
@@ -116,23 +112,8 @@ const handleAction = (
               clientLog("error", "Navigation failed after signup", err),
             ),
           ),
-        onFailure: (error) => {
-          let message: string;
-          switch (error._tag) {
-            case "PasswordsDoNotMatchError":
-              message = "Passwords do not match.";
-              break;
-            case "EmailInUseError":
-              message = "This email address is already in use.";
-              break;
-            default:
-              message = "An unknown error occurred. Please try again.";
-              break;
-          }
-          return Effect.sync(() =>
-            propose({ type: "SIGNUP_ERROR", payload: message }),
-          );
-        },
+        onFailure: (error) =>
+          Effect.sync(() => propose({ type: "SIGNUP_ERROR", payload: error })),
       }),
       Effect.asVoid,
     );
@@ -143,12 +124,7 @@ const handleAction = (
 // --- Component Definition ---
 @customElement("signup-page")
 export class SignupPage extends LitElement {
-  private ctrl = new SamController<
-    this,
-    Model,
-    Action,
-    never // Error type is `never` because `handleAction` catches its own errors
-  >(
+  private ctrl = new SamController<this, Model, Action, never>(
     this,
     {
       email: "",
@@ -164,6 +140,21 @@ export class SignupPage extends LitElement {
 
   override render(): TemplateResult {
     const model = this.ctrl.model;
+
+    // ✅ 7. Create a helper to map the typed error to a user-friendly string
+    const getErrorMessage = (error: SignupError | null): string | null => {
+      if (!error) return null;
+      switch (error._tag) {
+        case "PasswordsDoNotMatchError":
+          return "Passwords do not match.";
+        case "EmailInUseError":
+          return "This email address is already in use.";
+        case "UnknownAuthError":
+          return "An unknown error occurred. Please try again.";
+      }
+    };
+    const errorMessage = getErrorMessage(model.error);
+
     return html`
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
@@ -213,8 +204,8 @@ export class SignupPage extends LitElement {
               })}
             </div>
 
-            ${model.error
-              ? html`<div class=${styles.errorText}>${model.error}</div>`
+            ${errorMessage
+              ? html`<div class=${styles.errorText}>${errorMessage}</div>`
               : nothing}
 
             <div class="mt-6">

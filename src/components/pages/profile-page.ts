@@ -1,7 +1,7 @@
 // src/components/pages/profile-page.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement } from "lit/decorators.js";
-import { Effect, Data } from "effect";
+import { Effect } from "effect";
 import {
   authState,
   proposeAuthAction,
@@ -12,12 +12,8 @@ import styles from "./ProfilePage.module.css";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import "../features/change-password-form";
 import { SamController } from "../../lib/client/sam-controller";
-
-// --- Custom Error Types ---
-class AvatarUploadError extends Data.TaggedError("AvatarUploadError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+// ✅ 1. Import the new typed error
+import { AvatarUploadError } from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {
@@ -33,7 +29,8 @@ type Action =
   | { type: "AUTH_STATE_CHANGED"; payload: AuthModel }
   | { type: "UPLOAD_START"; payload: File }
   | { type: "UPLOAD_SUCCESS"; payload: string }
-  | { type: "UPLOAD_ERROR"; payload: string }
+  // ✅ 2. The error payload is now a typed error object
+  | { type: "UPLOAD_ERROR"; payload: AvatarUploadError }
   | { type: "TOGGLE_CHANGE_PASSWORD_FORM" }
   | { type: "PASSWORD_CHANGE_SUCCESS" }
   | { type: "PASSWORD_CHANGE_CANCELLED" };
@@ -55,7 +52,6 @@ const update = (model: Model, action: Action): Model => {
         ? { ...model.auth.user, avatar_url: action.payload }
         : null;
       if (user) {
-        // This is a side-effect, but it's acceptable here as it updates a global store
         proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
       }
       return {
@@ -65,12 +61,13 @@ const update = (model: Model, action: Action): Model => {
         message: "Avatar updated!",
       };
     }
+    // ✅ 3. Extract the user-friendly message from the error object
     case "UPLOAD_ERROR":
       return {
         ...model,
         status: "error",
         loadingAction: null,
-        message: action.payload,
+        message: action.payload.message,
       };
     case "TOGGLE_CHANGE_PASSWORD_FORM":
       return {
@@ -103,15 +100,16 @@ const handleAction = (
   action: Action,
   _model: Model,
   propose: (a: Action) => void,
-): Effect.Effect<void, AvatarUploadError, RpcLogClient> => {
+): Effect.Effect<void, never, RpcLogClient> => {
   if (action.type === "UPLOAD_START") {
     const formData = new FormData();
     formData.append("avatar", action.payload);
 
+    // ✅ 4. This effect now describes the logic and its specific failure type
     const uploadEffect = Effect.tryPromise({
       try: () => fetch("/api/user/avatar", { method: "POST", body: formData }),
       catch: (cause) =>
-        new AvatarUploadError({ message: String(cause), cause }),
+        new AvatarUploadError({ message: "Network request failed.", cause }),
     }).pipe(
       Effect.flatMap((response) =>
         response.ok
@@ -136,6 +134,7 @@ const handleAction = (
       ),
     );
 
+    // ✅ 5. This effect handles the outcome, mapping success/failure to state-updating actions
     return uploadEffect.pipe(
       Effect.matchEffect({
         onSuccess: (json) =>
@@ -145,7 +144,9 @@ const handleAction = (
               payload: json.avatarUrl,
             }),
           ),
-        onFailure: (error) =>
+        onFailure: (
+          error, // `error` here is our typed `AvatarUploadError`
+        ) =>
           clientLog("error", "[profile-page] Avatar upload failed.", {
             error,
           }).pipe(
@@ -153,7 +154,7 @@ const handleAction = (
               Effect.sync(() =>
                 propose({
                   type: "UPLOAD_ERROR",
-                  payload: error.message,
+                  payload: error, // Pass the whole error object to the update function
                 }),
               ),
             ),
@@ -166,6 +167,7 @@ const handleAction = (
 
 @customElement("profile-page")
 export class ProfilePage extends LitElement {
+  // ✅ 6. The SamController is now aware of the specific error type
   private ctrl = new SamController<this, Model, Action, AvatarUploadError>(
     this,
     {

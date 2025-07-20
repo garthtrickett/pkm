@@ -1,7 +1,7 @@
 // src/components/pages/forgot-password-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement } from "lit/decorators.js";
-import { Effect, Data } from "effect";
+import { Effect } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
@@ -10,26 +10,28 @@ import { NotionInput } from "../ui/notion-input";
 import styles from "./LoginPage.module.css";
 import { clientLog } from "../../lib/client/clientLog";
 import { SamController } from "../../lib/client/sam-controller";
+// ✅ 1. Import the new typed error
+import {
+  UnknownAuthError,
+  type ForgotPasswordError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {
   email: string;
-  error: string | null;
+  // ✅ 2. Use the typed error union
+  error: ForgotPasswordError | null;
   isLoading: boolean;
   isSuccess: boolean;
 }
-
-// --- Custom Error Types ---
-class UnknownRequestError extends Data.TaggedError("UnknownRequestError")<{
-  readonly cause: unknown;
-}> {}
 
 // --- Actions ---
 type Action =
   | { type: "UPDATE_EMAIL"; payload: string }
   | { type: "REQUEST_START" }
   | { type: "REQUEST_SUCCESS" }
-  | { type: "REQUEST_ERROR"; payload: string };
+  // ✅ 3. The error payload is now a typed error object
+  | { type: "REQUEST_ERROR"; payload: ForgotPasswordError };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
@@ -41,6 +43,7 @@ const update = (model: Model, action: Action): Model => {
     case "REQUEST_SUCCESS":
       return { ...model, isLoading: false, isSuccess: true };
     case "REQUEST_ERROR":
+      // ✅ 4. Store the actual error object in the model
       return { ...model, isLoading: false, error: action.payload };
     default:
       return model;
@@ -56,31 +59,35 @@ const handleAction = (
   if (action.type === "REQUEST_START") {
     const { email } = model;
 
+    // ✅ 5. Define the core logic effect which can fail with our typed error.
     const requestEffect = Effect.gen(function* () {
       const rpcClient = yield* RpcAuthClient;
+      // The RPC call should not fail with an AuthError, so we catch any
+      // unexpected failure (network, server 500) and wrap it.
       return yield* rpcClient
         .requestPasswordReset({ email })
         .pipe(
-          Effect.catchAll((error) =>
-            Effect.fail(new UnknownRequestError({ cause: error })),
+          Effect.catchAll((cause) =>
+            Effect.fail(new UnknownAuthError({ cause })),
           ),
         );
     });
 
+    // ✅ 6. Execute the logic and map success/failure to state-updating actions.
     return requestEffect.pipe(
       Effect.matchEffect({
         onSuccess: () =>
           Effect.sync(() => propose({ type: "REQUEST_SUCCESS" })),
-        onFailure: (error) => {
-          const message = "An unknown error occurred. Please try again.";
-          return clientLog("error", "[forgot-password] RPC failed", error).pipe(
+        onFailure: (
+          error, // `error` is our typed ForgotPasswordError
+        ) =>
+          clientLog("error", "[forgot-password] RPC failed", error).pipe(
             Effect.andThen(
               Effect.sync(() =>
-                propose({ type: "REQUEST_ERROR", payload: message }),
+                propose({ type: "REQUEST_ERROR", payload: error }),
               ),
             ),
-          );
-        },
+          ),
       }),
       Effect.asVoid,
     );
@@ -91,12 +98,7 @@ const handleAction = (
 // --- Component Definition ---
 @customElement("forgot-password-page")
 export class ForgotPasswordPage extends LitElement {
-  private ctrl = new SamController<
-    this,
-    Model,
-    Action,
-    never // Error is handled within handleAction
-  >(
+  private ctrl = new SamController<this, Model, Action, never>(
     this,
     {
       email: "",
@@ -136,6 +138,11 @@ export class ForgotPasswordPage extends LitElement {
       `;
     }
 
+    // ✅ 7. Map the typed error from the model to a user-friendly message
+    const errorMessage = model.error
+      ? "An unexpected error occurred. Please try again."
+      : null;
+
     return html`
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
@@ -165,8 +172,8 @@ export class ForgotPasswordPage extends LitElement {
               })}
             </div>
 
-            ${model.error
-              ? html`<div class=${styles.errorText}>${model.error}</div>`
+            ${errorMessage
+              ? html`<div class=${styles.errorText}>${errorMessage}</div>`
               : nothing}
 
             <div class="mt-6">

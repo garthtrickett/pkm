@@ -1,7 +1,7 @@
 // src/components/pages/verify-email-page.ts
 import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { Effect, Data, pipe, Schema } from "effect";
+import { Effect, pipe, Schema } from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
@@ -11,20 +11,19 @@ import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
 import type { LocationService } from "../../lib/client/LocationService";
 import { SamController } from "../../lib/client/sam-controller";
+// ✅ 1. Import the new typed errors
+import {
+  InvalidTokenError,
+  UnknownAuthError,
+  type VerifyEmailError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {
   status: "verifying" | "success" | "error";
-  message: string | null;
+  // ✅ 2. Use the typed error union
+  error: VerifyEmailError | null;
 }
-
-// --- Custom Error Types ---
-class InvalidTokenError extends Data.TaggedError("InvalidTokenError") {}
-class UnknownVerificationError extends Data.TaggedError(
-  "UnknownVerificationError",
-)<{
-  readonly cause: unknown;
-}> {}
 
 // --- Actions ---
 type Action =
@@ -33,7 +32,8 @@ type Action =
       type: "VERIFY_SUCCESS";
       payload: { user: PublicUser; sessionId: string };
     }
-  | { type: "VERIFY_ERROR"; payload: string };
+  // ✅ 3. The error payload is now a typed error object
+  | { type: "VERIFY_ERROR"; payload: VerifyEmailError };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
@@ -42,16 +42,17 @@ const update = (model: Model, action: Action): Model => {
       return {
         ...model,
         status: "verifying",
-        message: "Verifying your email...",
+        error: null,
       };
     case "VERIFY_SUCCESS":
       return {
         ...model,
         status: "success",
-        message: "Email verified successfully! Redirecting...",
+        error: null,
       };
     case "VERIFY_ERROR":
-      return { ...model, status: "error", message: action.payload };
+      // ✅ 4. Store the actual error object in the model
+      return { ...model, status: "error", error: action.payload };
     default:
       return model;
   }
@@ -69,6 +70,8 @@ const handleAction = (
 > => {
   if (action.type === "VERIFY_START") {
     const { token } = action.payload;
+
+    // ✅ 5. Define the core logic effect which can fail with our typed errors.
     const verifyEffect = Effect.gen(function* () {
       const rpcClient = yield* RpcAuthClient;
       return yield* rpcClient.verifyEmail({ token }).pipe(
@@ -76,44 +79,31 @@ const handleAction = (
           Schema.decodeUnknown(AuthError)(error).pipe(
             Effect.matchEffect({
               onSuccess: (authError) => {
-                const specificError:
-                  | InvalidTokenError
-                  | UnknownVerificationError =
+                const specificError: VerifyEmailError =
                   authError._tag === "BadRequest"
                     ? new InvalidTokenError()
-                    : new UnknownVerificationError({ cause: authError });
+                    : new UnknownAuthError({ cause: authError });
                 return Effect.fail(specificError);
               },
               onFailure: (parseError) =>
-                Effect.fail(
-                  new UnknownVerificationError({ cause: parseError }),
-                ),
+                Effect.fail(new UnknownAuthError({ cause: parseError })),
             }),
           ),
         ),
       );
     });
 
+    // ✅ 6. Execute the logic and map success/failure to state-updating actions.
     return verifyEffect.pipe(
       Effect.matchEffect({
         onSuccess: (result) =>
           Effect.sync(() =>
             propose({ type: "VERIFY_SUCCESS", payload: result }),
           ),
-        onFailure: (error) => {
-          let message: string;
-          switch (error._tag) {
-            case "InvalidTokenError":
-              message = "This verification link is invalid or has expired.";
-              break;
-            default:
-              message = "An unknown error occurred during verification.";
-              break;
-          }
-          return Effect.sync(() =>
-            propose({ type: "VERIFY_ERROR", payload: message }),
-          );
-        },
+        onFailure: (
+          error, // `error` is our typed VerifyEmailError
+        ) =>
+          Effect.sync(() => propose({ type: "VERIFY_ERROR", payload: error })),
       }),
     );
   } else if (action.type === "VERIFY_SUCCESS") {
@@ -139,16 +129,11 @@ export class VerifyEmailPage extends LitElement {
   @property({ type: String })
   token = "";
 
-  private ctrl = new SamController<
-    this,
-    Model,
-    Action,
-    never // Errors handled in handleAction
-  >(
+  private ctrl = new SamController<this, Model, Action, never>(
     this,
     {
       status: "verifying",
-      message: "Verifying your email...",
+      error: null,
     },
     update,
     handleAction,
@@ -156,13 +141,31 @@ export class VerifyEmailPage extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    // The controller's `hostConnected` will be called automatically.
-    // We just need to kick off the initial action.
     this.ctrl.propose({ type: "VERIFY_START", payload: { token: this.token } });
   }
 
   override render(): TemplateResult {
     const model = this.ctrl.model;
+
+    // ✅ 7. Map the typed error from the model to a user-friendly message
+    const getMessage = (): string => {
+      switch (model.status) {
+        case "verifying":
+          return "Verifying your email...";
+        case "success":
+          return "Email verified successfully! Redirecting...";
+        case "error": {
+          if (!model.error) return "An unknown error occurred.";
+          switch (model.error._tag) {
+            case "InvalidTokenError":
+              return "This verification link is invalid or has expired.";
+            case "UnknownAuthError":
+              return "An unknown error occurred during verification.";
+          }
+        }
+      }
+    };
+    const message = getMessage();
 
     const renderContent = () => {
       switch (model.status) {
@@ -170,15 +173,15 @@ export class VerifyEmailPage extends LitElement {
           return html`<div
               class="h-12 w-12 animate-spin rounded-full border-4 border-zinc-300 border-t-zinc-600"
             ></div>
-            <p class="mt-4 text-zinc-600">${model.message}</p>`;
+            <p class="mt-4 text-zinc-600">${message}</p>`;
         case "success":
           return html`<h2 class="text-2xl font-bold text-green-600">
               Success!
             </h2>
-            <p class="mt-4 text-zinc-600">${model.message}</p>`;
+            <p class="mt-4 text-zinc-600">${message}</p>`;
         case "error":
           return html`<h2 class="text-2xl font-bold text-red-600">Error</h2>
-            <p class="mt-4 text-zinc-600">${model.message}</p>
+            <p class="mt-4 text-zinc-600">${message}</p>
             <div class="mt-6">
               <a
                 href="/login"
