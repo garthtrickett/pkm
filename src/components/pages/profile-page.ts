@@ -119,11 +119,45 @@ export class ProfilePage extends LitElement {
                 ),
               ),
         ),
-        Effect.match({
+        Effect.matchEffect({
           onSuccess: (json) =>
-            this._propose({ type: "UPLOAD_SUCCESS", payload: json.avatarUrl }),
+            Effect.sync(() =>
+              this._propose({
+                type: "UPLOAD_SUCCESS",
+                payload: json.avatarUrl,
+              }),
+            ),
+          // --- THIS BLOCK IS THE FIX ---
           onFailure: (error) =>
-            this._propose({ type: "UPLOAD_ERROR", payload: error.message }),
+            // First, try to log the detailed error.
+            clientLog("error", "[profile-page] Avatar upload failed.", {
+              error,
+            }).pipe(
+              // Regardless of whether logging succeeds or fails,
+              // always propose the UI update with the user-facing message.
+              Effect.andThen(
+                Effect.sync(() =>
+                  this._propose({
+                    type: "UPLOAD_ERROR",
+                    payload: error.message,
+                  }),
+                ),
+              ),
+              // If logging itself fails, catch that error, log it to the console as a fallback,
+              // and STILL proceed with the UI update. This makes the entire block infallible.
+              Effect.catchAll((loggingError) =>
+                Effect.sync(() => {
+                  console.error(
+                    "CRITICAL: Failed to log avatar upload error to server.",
+                    loggingError,
+                  );
+                  this._propose({
+                    type: "UPLOAD_ERROR",
+                    payload: error.message,
+                  });
+                }),
+              ),
+            ),
         }),
       );
 
