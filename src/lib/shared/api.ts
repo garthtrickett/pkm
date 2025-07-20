@@ -4,13 +4,54 @@ import { Schema } from "effect";
 import { PublicUserSchema } from "./schemas";
 import { AuthMiddleware, AuthError } from "./auth";
 
-// ⛔️ Replicache schemas are no longer part of the RPC API.
-
 export { AuthError };
 
 export class RequestError extends Schema.Class<RequestError>("RequestError")({
   errorMessage: Schema.String,
 }) {}
+
+// --- Payload Schemas and Types ---
+export const LoginPayloadSchema = Schema.Struct({
+  email: Schema.String,
+  password: Schema.String,
+});
+export type LoginPayload = Schema.Schema.Type<typeof LoginPayloadSchema>;
+
+export const SignupPayloadSchema = Schema.Struct({
+  email: Schema.String,
+  password: Schema.String,
+});
+export type SignupPayload = Schema.Schema.Type<typeof SignupPayloadSchema>;
+
+export const VerifyEmailPayloadSchema = Schema.Struct({
+  token: Schema.String,
+});
+export type VerifyEmailPayload = Schema.Schema.Type<
+  typeof VerifyEmailPayloadSchema
+>;
+
+export const RequestPasswordResetPayloadSchema = Schema.Struct({
+  email: Schema.String,
+});
+export type RequestPasswordResetPayload = Schema.Schema.Type<
+  typeof RequestPasswordResetPayloadSchema
+>;
+
+export const ResetPasswordPayloadSchema = Schema.Struct({
+  token: Schema.String,
+  newPassword: Schema.String.pipe(Schema.minLength(8)),
+});
+export type ResetPasswordPayload = Schema.Schema.Type<
+  typeof ResetPasswordPayloadSchema
+>;
+
+export const ChangePasswordPayloadSchema = Schema.Struct({
+  oldPassword: Schema.String,
+  newPassword: Schema.String.pipe(Schema.minLength(8)),
+});
+export type ChangePasswordPayload = Schema.Schema.Type<
+  typeof ChangePasswordPayloadSchema
+>;
 
 // --- RPC Definitions ---
 
@@ -22,19 +63,13 @@ const UnprotectedAuthRpc = RpcGroup.make(
       sessionId: Schema.String,
     }),
     error: AuthError,
-    payload: {
-      email: Schema.String,
-      password: Schema.String,
-    },
+    payload: LoginPayloadSchema,
   }),
 
   Rpc.make("signup", {
-    success: PublicUserSchema, // On success, it returns the created user
+    success: PublicUserSchema,
     error: AuthError,
-    payload: {
-      email: Schema.String,
-      password: Schema.String,
-    },
+    payload: SignupPayloadSchema,
   }),
 
   Rpc.make("verifyEmail", {
@@ -43,26 +78,19 @@ const UnprotectedAuthRpc = RpcGroup.make(
       sessionId: Schema.String,
     }),
     error: AuthError,
-    payload: {
-      token: Schema.String,
-    },
+    payload: VerifyEmailPayloadSchema,
   }),
 
   Rpc.make("requestPasswordReset", {
     success: Schema.Void,
-    error: AuthError, // Generic error for unknown failures
-    payload: {
-      email: Schema.String,
-    },
+    error: AuthError,
+    payload: RequestPasswordResetPayloadSchema,
   }),
 
   Rpc.make("resetPassword", {
     success: Schema.Void,
     error: AuthError,
-    payload: {
-      token: Schema.String,
-      newPassword: Schema.String.pipe(Schema.minLength(8)),
-    },
+    payload: ResetPasswordPayloadSchema,
   }),
 );
 
@@ -79,10 +107,7 @@ const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("changePassword", {
     success: Schema.Void,
     error: AuthError,
-    payload: {
-      oldPassword: Schema.String,
-      newPassword: Schema.String.pipe(Schema.minLength(8)),
-    },
+    payload: ChangePasswordPayloadSchema,
   }),
 ).middleware(AuthMiddleware);
 
