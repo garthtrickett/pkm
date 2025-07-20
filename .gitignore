@@ -1,3 +1,7 @@
+node_modules
+a.txt
+.env
+.vite
 /nbproject/
 /.idea/*
 *.tmlanguage.cache
