@@ -3,7 +3,7 @@ import { LitElement, html } from "lit";
 import { customElement } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
 import { Effect, Option, Schema } from "effect";
-import { runClientUnscoped, runClientPromise } from "../../lib/client/runtime";
+import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
 import { ReplicacheService } from "../../lib/client/replicache";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
 import { navigate } from "../../lib/client/router";
@@ -14,21 +14,29 @@ import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import { v4 as uuidv4 } from "uuid";
 import { SamController } from "../../lib/client/sam-controller";
 import type { LocationService } from "../../lib/client/LocationService";
-// ✅ 1. Import the specific type from Replicache
 import type { ReadonlyJSONValue } from "replicache";
+import {
+  NoteCreationError,
+  NoteDeletionError,
+  type NotesPageError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 interface Model {
   notes: Note[];
   isCreating: boolean;
+  error: NotesPageError | null;
 }
 
 // --- Actions ---
 type Action =
   | { type: "NOTES_UPDATED"; payload: Note[] }
   | { type: "CREATE_NOTE_START" }
-  | { type: "CREATE_NOTE_COMPLETE" } // Used to reset loading state
-  | { type: "DELETE_NOTE"; payload: NoteId };
+  | { type: "CREATE_NOTE_COMPLETE" }
+  | { type: "CREATE_NOTE_ERROR"; payload: NoteCreationError }
+  | { type: "DELETE_NOTE"; payload: NoteId }
+  | { type: "DELETE_NOTE_ERROR"; payload: NoteDeletionError }
+  | { type: "CLEAR_ERROR" };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
@@ -42,14 +50,17 @@ const update = (model: Model, action: Action): Model => {
         ),
       };
     case "CREATE_NOTE_START":
-      return { ...model, isCreating: true };
+      return { ...model, isCreating: true, error: null };
     case "CREATE_NOTE_COMPLETE":
       return { ...model, isCreating: false };
+    case "CREATE_NOTE_ERROR":
+      return { ...model, isCreating: false, error: action.payload };
     case "DELETE_NOTE":
-      // The actual deletion from the list will happen reactively
-      // when Replicache triggers a NOTES_UPDATED action.
-      // This action is just for triggering the side effect.
-      return model;
+      return { ...model, error: null };
+    case "DELETE_NOTE_ERROR":
+      return { ...model, error: action.payload };
+    case "CLEAR_ERROR":
+      return { ...model, error: null };
   }
 };
 
@@ -60,7 +71,7 @@ const handleAction = (
   propose: (a: Action) => void,
 ): Effect.Effect<
   void,
-  never,
+  NotesPageError,
   ReplicacheService | RpcLogClient | LocationService
 > => {
   switch (action.type) {
@@ -69,41 +80,36 @@ const handleAction = (
         const replicache = yield* ReplicacheService;
         const user = authState.value.user!;
         const newNoteId = uuidv4() as NoteId;
-        yield* Effect.promise(() =>
-          replicache.client.mutate.createNote({
-            id: newNoteId,
-            userID: user.id,
-            title: "Untitled Note",
-          }),
-        );
-        yield* navigate(`/notes/${newNoteId}`);
-      });
+        yield* Effect.tryPromise({
+          try: () =>
+            replicache.client.mutate.createNote({
+              id: newNoteId,
+              userID: user.id,
+              title: "Untitled Note",
+            }),
+          catch: (cause) => new NoteCreationError({ cause }),
+        });
 
+        // ✅ FIX: Map the generic `Error` from `Maps` to our typed `NoteCreationError`.
+        yield* navigate(`/notes/${newNoteId}`).pipe(
+          Effect.mapError((cause) => new NoteCreationError({ cause })),
+        );
+      });
       return createEffect.pipe(
         Effect.ensuring(
           Effect.sync(() => propose({ type: "CREATE_NOTE_COMPLETE" })),
         ),
-        Effect.catchAll((err) =>
-          clientLog("error", "[NotesPage] Failed to create note", err),
-        ),
       );
     }
-
     case "DELETE_NOTE": {
       return Effect.gen(function* () {
         const replicache = yield* ReplicacheService;
-        yield* Effect.promise(() =>
-          replicache.client.mutate.deleteNote({ id: action.payload }),
-        );
-      }).pipe(
-        Effect.catchAll((err) =>
-          clientLog(
-            "error",
-            `[NotesPage] Failed to delete note ${action.payload}`,
-            err,
-          ),
-        ),
-      );
+        yield* Effect.tryPromise({
+          try: () =>
+            replicache.client.mutate.deleteNote({ id: action.payload }),
+          catch: (cause) => new NoteDeletionError({ cause }),
+        });
+      });
     }
     default:
       return Effect.void;
@@ -112,11 +118,23 @@ const handleAction = (
 
 @customElement("notes-page")
 export class NotesPage extends LitElement {
-  private ctrl = new SamController<this, Model, Action, never>(
+  private ctrl = new SamController<this, Model, Action, NotesPageError>(
     this,
-    { notes: [], isCreating: false },
+    { notes: [], isCreating: false, error: null },
     update,
-    handleAction,
+    (action, model, propose) =>
+      handleAction(action, model, propose).pipe(
+        Effect.catchTag("NoteCreationError", (err) =>
+          Effect.sync(() =>
+            propose({ type: "CREATE_NOTE_ERROR", payload: err }),
+          ),
+        ),
+        Effect.catchTag("NoteDeletionError", (err) =>
+          Effect.sync(() =>
+            propose({ type: "DELETE_NOTE_ERROR", payload: err }),
+          ),
+        ),
+      ),
   );
 
   private _isInitialized = false;
@@ -132,11 +150,9 @@ export class NotesPage extends LitElement {
         );
         const replicache = yield* ReplicacheService;
 
-        // Unsubscribe from any previous subscription before creating a new one
         this._replicacheUnsubscribe?.();
 
         this._replicacheUnsubscribe = replicache.client.subscribe(
-          // 1. The "query" function: simply returns raw JSON data from the cache.
           async (tx) => {
             const noteJSONs = await tx
               .scan({ prefix: "note/" })
@@ -144,14 +160,11 @@ export class NotesPage extends LitElement {
               .toArray();
             return noteJSONs;
           },
-          // 2. The "onData" callback with the correct type.
-          // ✅ FIX: Replace `any[]` with `ReadonlyJSONValue[]` for type safety.
           (noteJSONs: ReadonlyJSONValue[]) => {
             const notes: Note[] = noteJSONs.flatMap((json) => {
               const option = Schema.decodeUnknownOption(NoteSchema)(json);
               return Option.isSome(option) ? [option.value] : [];
             });
-
             this.ctrl.propose({ type: "NOTES_UPDATED", payload: notes });
           },
         );
@@ -162,7 +175,6 @@ export class NotesPage extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-
     const handleAuthChange = (auth: AuthModel) => {
       if (auth.status === "authenticated" && !this._isInitialized) {
         this._isInitialized = true;
@@ -170,10 +182,9 @@ export class NotesPage extends LitElement {
       } else if (auth.status !== "authenticated" && this._isInitialized) {
         this._isInitialized = false;
         this._replicacheUnsubscribe?.();
-        this.ctrl.propose({ type: "NOTES_UPDATED", payload: [] }); // Clear notes
+        this.ctrl.propose({ type: "NOTES_UPDATED", payload: [] });
       }
     };
-
     this._authUnsubscribe = authState.subscribe(handleAuthChange);
     handleAuthChange(authState.value);
   }
@@ -190,10 +201,28 @@ export class NotesPage extends LitElement {
   }
 
   override render() {
-    const { notes, isCreating } = this.ctrl.model;
+    const { notes, isCreating, error } = this.ctrl.model;
+
+    const getErrorMessage = (e: NotesPageError | null): string | null => {
+      if (!e) return null;
+      switch (e._tag) {
+        case "NoteCreationError":
+          return "Could not create a new note. Please try again.";
+        case "NoteDeletionError":
+          return "Could not delete the note. Please try again.";
+      }
+    };
+    const errorMessage = getErrorMessage(error);
 
     return html`
       <div class=${styles.container}>
+        ${errorMessage
+          ? html`<div
+              class="mb-4 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+            >
+              ${errorMessage}
+            </div>`
+          : ""}
         <div class=${styles.header}>
           <div>
             <h2 class=${styles.headerH2}>Your Notes</h2>

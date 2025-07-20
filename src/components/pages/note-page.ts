@@ -2,8 +2,8 @@
 import { LitElement, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
-import { Effect, Schema, Fiber, Duration, Exit } from "effect";
-import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
+import { Effect, Schema, Fiber, Duration, Exit, Cause } from "effect";
+import { runClientUnscoped } from "../../lib/client/runtime";
 import { ReplicacheService } from "../../lib/client/replicache";
 import styles from "./NotePage.module.css";
 import {
@@ -13,10 +13,15 @@ import {
   type Note,
   type NoteId,
 } from "../../lib/shared/schemas";
-import { clientLog } from "../../lib/client/clientLog";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
 import { SamController } from "../../lib/client/sam-controller";
 import type { ReadonlyJSONValue } from "replicache";
+import {
+  NoteNotFoundError,
+  NoteParseError,
+  NoteSaveError,
+  type NotePageError,
+} from "../../lib/client/errors";
 
 // --- Model ---
 type Status = "loading" | "idle" | "saving" | "error";
@@ -24,18 +29,17 @@ interface Model {
   note: Note | null;
   blocks: Block[];
   status: Status;
-  error: string | null;
+  error: NotePageError | null;
 }
 
 // --- Actions ---
 type Action =
   | { type: "INITIALIZE_START" }
-  | { type: "INITIALIZE_ERROR"; payload: string }
+  | { type: "INITIALIZE_ERROR"; payload: NotePageError }
   | { type: "DATA_UPDATED"; payload: { note: Note; blocks: Block[] } }
-  | { type: "DATA_NOT_FOUND" }
   | { type: "UPDATE_FIELD"; payload: Partial<Pick<Note, "title" | "content">> }
   | { type: "SAVE_SUCCESS" }
-  | { type: "SAVE_ERROR"; payload: string };
+  | { type: "SAVE_ERROR"; payload: NoteSaveError };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
@@ -51,7 +55,6 @@ const update = (model: Model, action: Action): Model => {
     case "INITIALIZE_ERROR":
       return { ...model, status: "error", error: action.payload };
     case "DATA_UPDATED":
-      // Avoid overwriting local edits that are in the process of saving
       if (model.status === "saving") {
         return {
           ...model,
@@ -63,15 +66,15 @@ const update = (model: Model, action: Action): Model => {
         note: action.payload.note,
         blocks: action.payload.blocks,
         status: "idle",
+        error: null, // Clear any previous errors on successful data update
       };
-    case "DATA_NOT_FOUND":
-      return { ...model, status: "error", error: "Note not found." };
     case "UPDATE_FIELD":
       if (!model.note) return model;
       return {
         ...model,
         note: { ...model.note, ...action.payload },
         status: "saving",
+        error: null, // Clear error when user starts typing
       };
     case "SAVE_SUCCESS":
       return { ...model, status: "idle" };
@@ -85,12 +88,11 @@ export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
 
-  private ctrl = new SamController<this, Model, Action, never>(
+  private ctrl = new SamController<this, Model, Action, NotePageError>(
     this,
     { note: null, blocks: [], status: "loading", error: null },
     update,
-    // No complex side effects are handled by the controller directly in this case
-    () => Effect.void,
+    () => Effect.void, // Side effects are handled in component methods
   );
 
   private _replicacheUnsubscribe: (() => void) | undefined;
@@ -105,11 +107,7 @@ export class NotePage extends LitElement {
     const setupEffect = Effect.gen(
       function* (this: NotePage) {
         if (!this.id) {
-          this.ctrl.propose({
-            type: "INITIALIZE_ERROR",
-            payload: "Note ID is missing.",
-          });
-          return;
+          return yield* Effect.fail(new NoteNotFoundError());
         }
 
         const replicache = yield* ReplicacheService;
@@ -126,18 +124,15 @@ export class NotePage extends LitElement {
             ),
           (result) => {
             if (!result.note) {
-              this.ctrl.propose({ type: "DATA_NOT_FOUND" });
+              this.ctrl.propose({
+                type: "INITIALIZE_ERROR",
+                payload: new NoteNotFoundError(),
+              });
               return;
             }
 
-            // ✅ THIS IS THE FIX ✅
-            // Type-safely filter the blocks before attempting to decode them.
             const relevantBlocks = result.allBlocks.filter(
-              (
-                b,
-              ): b is ReadonlyJSONValue & {
-                note_id: string;
-              } =>
+              (b): b is ReadonlyJSONValue & { note_id: string } =>
                 typeof b === "object" &&
                 b !== null &&
                 (b as { note_id?: unknown }).note_id === this.id,
@@ -148,7 +143,7 @@ export class NotePage extends LitElement {
               blocks: Schema.decodeUnknown(Schema.Array(BlockSchema))(
                 relevantBlocks,
               ),
-            });
+            }).pipe(Effect.mapError((cause) => new NoteParseError({ cause })));
 
             Effect.runCallback(parseResult, {
               onExit: (exit) => {
@@ -162,15 +157,11 @@ export class NotePage extends LitElement {
                     payload: { note, blocks: sortedBlocks },
                   });
                 } else {
+                  // ✅ FIX: Use Cause.squash to extract the error object
                   this.ctrl.propose({
                     type: "INITIALIZE_ERROR",
-                    payload: "Failed to parse note data.",
+                    payload: Cause.squash(exit.cause) as NotePageError,
                   });
-                  runClientUnscoped(
-                    clientLog("error", "Failed to decode data", {
-                      cause: exit.cause,
-                    }),
-                  );
                 }
               },
             });
@@ -179,7 +170,15 @@ export class NotePage extends LitElement {
       }.bind(this),
     );
 
-    void runClientPromise(setupEffect);
+    runClientUnscoped(
+      setupEffect.pipe(
+        Effect.catchAll((error) =>
+          Effect.sync(() =>
+            this.ctrl.propose({ type: "INITIALIZE_ERROR", payload: error }),
+          ),
+        ),
+      ),
+    );
   }
 
   override connectedCallback() {
@@ -216,7 +215,6 @@ export class NotePage extends LitElement {
 
   private _handleInput(updateField: Partial<Pick<Note, "title" | "content">>) {
     this.ctrl.propose({ type: "UPDATE_FIELD", payload: updateField });
-
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
@@ -228,32 +226,29 @@ export class NotePage extends LitElement {
         const noteToSave = this.ctrl.model.note;
         if (!noteToSave) return;
 
-        yield* Effect.promise(() =>
-          replicache.client.mutate.updateNote({
-            id: this.id as NoteId,
-            title: noteToSave.title,
-            content: noteToSave.content,
-          }),
-        );
+        return yield* Effect.tryPromise({
+          try: () =>
+            replicache.client.mutate.updateNote({
+              id: this.id as NoteId,
+              title: noteToSave.title,
+              content: noteToSave.content,
+            }),
+          catch: (cause) => new NoteSaveError({ cause }),
+        });
       }.bind(this),
-    ).pipe(
+    );
+
+    const executionEffect = saveEffect.pipe(
       Effect.matchEffect({
         onSuccess: () =>
           Effect.sync(() => this.ctrl.propose({ type: "SAVE_SUCCESS" })),
-        onFailure: (err) =>
-          clientLog("error", `Save failed for note ${this.id}`, err).pipe(
-            Effect.andThen(
-              Effect.sync(() =>
-                this.ctrl.propose({
-                  type: "SAVE_ERROR",
-                  payload: "Failed to save note.",
-                }),
-              ),
-            ),
+        onFailure: (error) =>
+          Effect.sync(() =>
+            this.ctrl.propose({ type: "SAVE_ERROR", payload: error }),
           ),
       }),
     );
-    this._saveFiber = runClientUnscoped(saveEffect);
+    this._saveFiber = runClientUnscoped(executionEffect);
   }
 
   protected override createRenderRoot() {
@@ -263,26 +258,35 @@ export class NotePage extends LitElement {
   override render() {
     const { note, blocks, status, error } = this.ctrl.model;
 
-    // --- ✅ START OF FIX ---
-    // Case 1: Still loading the initial data.
+    const getErrorMessage = (e: NotePageError | null): string | null => {
+      if (!e) return null;
+      switch (e._tag) {
+        case "NoteNotFoundError":
+          return "This note could not be found.";
+        case "NoteParseError":
+          return "There was an error reading the note's data from the local database.";
+        case "NoteSaveError":
+          return "Failed to save changes. Please check your connection.";
+      }
+    };
+    const errorMessage = getErrorMessage(error);
+
     if (status === "loading") {
       return html`<div class=${styles.container}><p>Loading note...</p></div>`;
     }
 
-    // Case 2: A fatal error occurred during initialization (e.g., note not found).
-    // We know this because `note` is still null, even though we are not loading.
     if (!note) {
       return html`<div class=${styles.container}>
-        <p class=${styles.errorText}>${error || "Note could not be loaded."}</p>
+        <p class=${styles.errorText}>
+          ${errorMessage || "Note could not be loaded."}
+        </p>
       </div>`;
     }
-    // --- ✅ END OF FIX ---
 
-    // At this point, we know we have a note, so we can render the editor.
-    // The status can be 'idle', 'saving', or 'error' (from a failed save).
     const renderStatus = () => {
       if (status === "saving") return "Saving...";
-      if (status === "error") return "Error saving"; // This is now reachable
+      if (status === "error")
+        return html`<span class="text-red-500">${errorMessage}</span>`;
       return "Saved";
     };
 

@@ -58,3 +58,24 @@ export class AvatarUploadError extends Data.TaggedError("AvatarUploadError")<{
   readonly message: string; // Keep message for specific feedback
   readonly cause?: unknown;
 }> {}
+
+// --- Note Page (Single Note View) Errors ---
+export class NoteNotFoundError extends Data.TaggedError("NoteNotFoundError") {}
+export class NoteParseError extends Data.TaggedError("NoteParseError")<{
+  readonly cause: unknown;
+}> {}
+export class NoteSaveError extends Data.TaggedError("NoteSaveError")<{
+  readonly cause: unknown;
+}> {}
+
+// --- Notes Page (List View) Errors ---
+export class NoteCreationError extends Data.TaggedError("NoteCreationError")<{
+  readonly cause: unknown;
+}> {}
+export class NoteDeletionError extends Data.TaggedError("NoteDeletionError")<{
+  readonly cause: unknown;
+}> {}
+
+// --- Type Unions for Components ---
+export type NotePageError = NoteNotFoundError | NoteParseError | NoteSaveError;
+export type NotesPageError = NoteCreationError | NoteDeletionError;
