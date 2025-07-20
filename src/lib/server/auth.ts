@@ -1,23 +1,20 @@
 // src/lib/server/auth.ts
-import { Effect, Layer, Metric, Option, Schema } from "effect";
-import { Db } from "../../db/DbTag";
-import { AuthDatabaseError } from "../../features/auth/Errors";
-import type { Session, SessionId } from "../../types/generated/public/Session";
-import type { UserId } from "../../types/generated/public/User";
-// ✅ FIX: Export AuthError directly from here, as it's the source of truth.
-import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
-import type { User } from "../shared/schemas";
-import { UserSchema } from "../shared/schemas";
-import { Crypto } from "./crypto";
-import { sessionValidationSuccessCounter } from "./metrics";
-import { generateId } from "./utils";
-import type { Headers } from "@effect/platform/Headers";
 import {
   HttpMiddleware,
   HttpServerRequest,
   HttpServerResponse,
 } from "@effect/platform";
-import { createDate, TimeSpan } from "oslo";
+import { Effect, Layer, Metric, Option } from "effect";
+import { Db } from "../../db/DbTag";
+import type { Session } from "../../types/generated/public/Session";
+import { Auth, AuthError, AuthMiddleware } from "../shared/auth";
+import type { User } from "../shared/schemas";
+import { sessionValidationSuccessCounter } from "./metrics";
+// ✅ IMPORT: Import the session logic from the new service file.
+import {
+  getSessionIdFromRequest,
+  validateSessionEffect,
+} from "./session.service";
 
 // Re-export for convenience in other server files
 export { Auth, AuthMiddleware, AuthError };
@@ -175,93 +172,3 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
     return yield* Effect.provideService(app, Auth, authService);
   }),
 );
-
-/* ───────────────────────────────── Helper Functions ───────────────────────────────── */
-export const getSessionIdFromRequest = (req: {
-  headers: Headers;
-}): Option.Option<string> =>
-  Option.fromNullable(req.headers["cookie"]).pipe(
-    Option.map((cookieHeader) => cookieHeader.split("; ")),
-    Option.flatMap((cookies) =>
-      Option.fromNullable(cookies.find((c) => c.startsWith("session_id="))),
-    ),
-    Option.flatMap((cookie) => Option.fromNullable(cookie.split("=")[1])),
-  );
-
-export const createSessionEffect = (
-  userId: UserId,
-): Effect.Effect<string, AuthDatabaseError, Db | Crypto> =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    const sessionId = yield* generateId(40);
-    const expiresAt = createDate(new TimeSpan(30, "d"));
-
-    yield* Effect.promise(() =>
-      db
-        .insertInto("session")
-        .values({
-          id: sessionId as SessionId,
-          user_id: userId,
-          expires_at: expiresAt,
-        })
-        .execute(),
-    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
-
-    return sessionId;
-  });
-
-export const deleteSessionEffect = (
-  sessionId: string,
-): Effect.Effect<void, AuthDatabaseError, Db> =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* Effect.promise(() =>
-      db
-        .deleteFrom("session")
-        .where("id", "=", sessionId as SessionId)
-        .execute(),
-    ).pipe(
-      Effect.mapError((cause) => new AuthDatabaseError({ cause })),
-      Effect.asVoid,
-    );
-  });
-
-export const validateSessionEffect = (
-  sessionId: string,
-): Effect.Effect<
-  { user: User | null; session: Session | null },
-  AuthDatabaseError,
-  Db
-> =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    const session = yield* Effect.promise(() =>
-      db
-        .selectFrom("session")
-        .selectAll()
-        .where("id", "=", sessionId as SessionId)
-        .executeTakeFirst(),
-    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
-
-    if (!session) {
-      return { user: null, session: null };
-    }
-
-    if (session.expires_at < new Date()) {
-      yield* Effect.fork(deleteSessionEffect(sessionId));
-      return { user: null, session: null };
-    }
-
-    const maybeRawUser = yield* Effect.promise(() =>
-      db
-        .selectFrom("user")
-        .selectAll()
-        .where("id", "=", session.user_id)
-        .executeTakeFirst(),
-    ).pipe(Effect.mapError((cause) => new AuthDatabaseError({ cause })));
-
-    const user = Option.getOrNull(
-      Schema.decodeUnknownOption(UserSchema)(maybeRawUser),
-    );
-    return { user, session };
-  });

@@ -1,7 +1,8 @@
 // FILE: src/features/websockets/websocket.handler.ts
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform";
 import { Cause, Effect, Option, Stream } from "effect";
-import { validateSessionEffect } from "../../lib/server/auth";
+// ✅ IMPORT: Import session logic from the new, dedicated service file.
+import { validateSessionEffect } from "../../lib/server/session.service";
 import { PokeService } from "../../lib/server/PokeService";
 
 export const wsHandler = Stream.fromEffect(

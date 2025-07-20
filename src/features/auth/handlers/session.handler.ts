@@ -3,10 +3,11 @@ import { Effect } from "effect";
 import { Argon2id } from "oslo/password";
 import type { LoginPayload } from "../../../lib/shared/api";
 import { Auth, AuthError } from "../../../lib/shared/auth";
+// ✅ IMPORT: Import session logic from the new, dedicated service file.
 import {
   createSessionEffect,
   deleteSessionEffect,
-} from "../../../lib/server/auth";
+} from "../../../lib/server/session.service";
 import { Db } from "../../../db/DbTag";
 import { InvalidCredentialsError, EmailNotVerifiedError } from "../Errors";
 

@@ -9,7 +9,8 @@ import type {
 import { AuthError } from "../../../lib/shared/auth";
 import { Db } from "../../../db/DbTag";
 import { Crypto } from "../../../lib/server/crypto";
-import { createSessionEffect } from "../../../lib/server/auth";
+// ✅ IMPORT: Import session logic from the new, dedicated service file.
+import { createSessionEffect } from "../../../lib/server/session.service";
 import {
   EmailAlreadyExistsError,
   PasswordHashingError,

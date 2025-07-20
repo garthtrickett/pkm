@@ -1,106 +1,55 @@
 // src/features/replicache/push.ts
-import { Effect, Schema, Data } from "effect";
+import { Data, Effect, Schema } from "effect";
 import type { PushRequest } from "../../lib/shared/replicache-schemas";
-import { sql } from "kysely";
 import { Db } from "../../db/DbTag";
 import { Auth, AuthError } from "../../lib/server/auth";
-import { NoteIdSchema, UserIdSchema } from "../../lib/shared/schemas";
-import type { NewNote } from "../../types/generated/public/Note";
 import type { ReplicacheClientId } from "../../types/generated/public/ReplicacheClient";
 import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
-import { Database } from "../../types";
-import { Kysely } from "kysely";
+import type { Database } from "../../types";
+import type { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
 import type { User } from "../../lib/shared/schemas";
+// ✅ IMPORT: Import mutation handlers and schemas from the new, dedicated file.
+import {
+  CreateNoteArgsSchema,
+  DeleteNoteArgsSchema,
+  UpdateNoteArgsSchema,
+  handleCreateNote,
+  handleDeleteNote,
+  handleUpdateNote,
+} from "../note/note.mutations";
 
-// ✅ FIX 1: Introduce a specific, rich error type for internal push operations.
 class PushTransactionError extends Data.TaggedError("PushTransactionError")<{
   readonly cause: unknown;
 }> {}
 
-// --- Mutation Schemas ---
-const CreateNoteArgsSchema = Schema.Struct({
-  id: NoteIdSchema,
-  userID: UserIdSchema, // Matches the client mutator
-  title: Schema.String,
-});
-
-const UpdateNoteArgsSchema = Schema.Struct({
-  id: NoteIdSchema,
-  title: Schema.String,
-  content: Schema.String,
-});
-
-const DeleteNoteArgsSchema = Schema.Struct({
-  id: NoteIdSchema,
-});
-
-// --- Mutation Logic (No changes needed here) ---
+// --- Mutation Logic (Now a simple dispatcher) ---
 const applyMutation = (mutation: PushRequest["mutations"][number]) =>
-  Effect.gen(function* (_) {
-    const db = yield* _(Db);
-    const { user } = yield* _(Auth);
-
+  Effect.gen(function* () {
     switch (mutation.name) {
       case "createNote": {
-        const args = yield* _(
-          Schema.decodeUnknown(CreateNoteArgsSchema)(mutation.args),
+        const args = yield* Schema.decodeUnknown(CreateNoteArgsSchema)(
+          mutation.args,
         );
-        const now = new Date();
-        const newNote: NewNote = {
-          id: args.id,
-          title: args.title,
-          content: "", // Start with empty content
-          user_id: user!.id,
-          version: 1,
-          created_at: now,
-          updated_at: now,
-        };
-        yield* _(
-          Effect.promise(() => db.insertInto("note").values(newNote).execute()),
-        );
+        yield* handleCreateNote(args);
         break;
       }
       case "updateNote": {
-        const args = yield* _(
-          Schema.decodeUnknown(UpdateNoteArgsSchema)(mutation.args),
+        const args = yield* Schema.decodeUnknown(UpdateNoteArgsSchema)(
+          mutation.args,
         );
-        yield* _(
-          Effect.promise(() =>
-            db
-              .updateTable("note")
-              .set({
-                title: args.title,
-                content: args.content,
-                version: sql`version + 1`,
-                updated_at: new Date(),
-              })
-              .where("id", "=", args.id)
-              .where("user_id", "=", user!.id)
-              .execute(),
-          ),
-        );
+        yield* handleUpdateNote(args);
         break;
       }
       case "deleteNote": {
-        const args = yield* _(
-          Schema.decodeUnknown(DeleteNoteArgsSchema)(mutation.args),
+        const args = yield* Schema.decodeUnknown(DeleteNoteArgsSchema)(
+          mutation.args,
         );
-        yield* _(
-          Effect.promise(() =>
-            db
-              .deleteFrom("note")
-              .where("id", "=", args.id)
-              .where("user_id", "=", user!.id)
-              .execute(),
-          ),
-        );
+        yield* handleDeleteNote(args);
         break;
       }
       default:
-        yield* _(
-          Effect.logWarning(`Unknown mutation received: ${mutation.name}`),
-        );
+        yield* Effect.logWarning(`Unknown mutation received: ${mutation.name}`);
     }
   });
 
@@ -223,8 +172,6 @@ export const handlePush = (
 
     const mutationsEffect = processMutations(mutations, clientGroupID, user!);
 
-    // ✅ FIX 2: Use Effect.tryPromise to correctly model a fallible operation.
-    // The `catch` block now wraps the original error in our rich internal error type.
     const transactionEffect = Effect.tryPromise({
       try: () =>
         db
@@ -239,7 +186,6 @@ export const handlePush = (
       catch: (cause) => new PushTransactionError({ cause }),
     });
 
-    // ✅ FIX 3: Catch our specific internal error, log it, and then fail with a generic public error.
     yield* _(
       transactionEffect.pipe(
         Effect.catchTag("PushTransactionError", (internalError) =>
