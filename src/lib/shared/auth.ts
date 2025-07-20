@@ -17,11 +17,19 @@ export class Auth extends Context.Tag("Auth")<
 /**
  * Defines the base error schema for all authentication and authorization failures.
  * This is part of the public API contract for protected routes.
- * The `_tag` allows for discriminating between different kinds of auth errors
- * (e.g., "Unauthorized", "Forbidden").
+ * The `_tag` allows for discriminating between different kinds of auth errors.
  */
+// ✅ THIS IS THE FIX ✅
+// By specifying the exact possible values for `_tag`, we create a true
+// discriminated union that TypeScript can use for type narrowing.
 export class AuthError extends Schema.Class<AuthError>("AuthError")({
-  _tag: Schema.String,
+  _tag: Schema.Literal(
+    "Unauthorized",
+    "Forbidden",
+    "BadRequest",
+    "EmailAlreadyExistsError",
+    "InternalServerError",
+  ),
   message: Schema.String,
 }) {}
 

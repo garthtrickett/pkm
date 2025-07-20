@@ -4,7 +4,8 @@ import { Db } from "../../db/DbTag";
 import { AuthDatabaseError } from "../../features/auth/Errors";
 import type { Session, SessionId } from "../../types/generated/public/Session";
 import type { UserId } from "../../types/generated/public/User";
-import { Auth, AuthError, AuthMiddleware } from "../shared/auth";
+// ✅ FIX: Export AuthError directly from here, as it's the source of truth.
+import { Auth, AuthMiddleware, AuthError } from "../shared/auth";
 import type { User } from "../shared/schemas";
 import { UserSchema } from "../shared/schemas";
 import { Crypto } from "./crypto";
@@ -19,7 +20,7 @@ import {
 import { createDate, TimeSpan } from "oslo";
 
 // Re-export for convenience in other server files
-export { Auth, AuthError, AuthMiddleware };
+export { Auth, AuthMiddleware, AuthError };
 
 // --- LIVE IMPLEMENTATION ---
 export const AuthMiddlewareLive = Layer.effect(
