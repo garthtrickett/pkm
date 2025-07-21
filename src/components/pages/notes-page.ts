@@ -90,7 +90,6 @@ const handleAction = (
           catch: (cause) => new NoteCreationError({ cause }),
         });
 
-        // ✅ FIX: Map the generic `Error` from `Maps` to our typed `NoteCreationError`.
         yield* navigate(`/notes/${newNoteId}`).pipe(
           Effect.mapError((cause) => new NoteCreationError({ cause })),
         );
@@ -115,7 +114,6 @@ const handleAction = (
       return Effect.void;
   }
 };
-
 @customElement("notes-page")
 export class NotesPage extends LitElement {
   private ctrl = new SamController<this, Model, Action, NotesPageError>(
@@ -136,11 +134,9 @@ export class NotesPage extends LitElement {
         ),
       ),
   );
-
   private _isInitialized = false;
   private _replicacheUnsubscribe: (() => void) | undefined;
   private _authUnsubscribe: (() => void) | undefined;
-
   private _initializeReplicacheSubscription() {
     const initEffect = Effect.gen(
       function* (this: NotesPage) {
@@ -202,7 +198,6 @@ export class NotesPage extends LitElement {
 
   override render() {
     const { notes, isCreating, error } = this.ctrl.model;
-
     const getErrorMessage = (e: NotesPageError | null): string | null => {
       if (!e) return null;
       switch (e._tag) {
@@ -217,10 +212,31 @@ export class NotesPage extends LitElement {
     return html`
       <div class=${styles.container}>
         ${errorMessage
-          ? html`<div
-              class="mb-4 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+          ? // --- MODIFIED ERROR BLOCK ---
+            html`<div
+              class="mb-4 flex items-center justify-between rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700"
             >
-              ${errorMessage}
+              <span>${errorMessage}</span>
+              <button
+                @click=${() => this.ctrl.propose({ type: "CLEAR_ERROR" })}
+                class="rounded-full p-1 text-red-600 transition-colors hover:bg-red-100"
+                aria-label="Dismiss error"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
             </div>`
           : ""}
         <div class=${styles.header}>

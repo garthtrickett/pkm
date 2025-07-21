@@ -24,7 +24,6 @@ import { RpcLogClientLive } from "./rpc";
 class PullerHttpError extends Error {
   httpStatusCode: number;
   errorMessage: string;
-
   constructor(message: string, statusCode: number, responseText: string) {
     super(message);
     this.name = "PullerHttpError";
@@ -123,7 +122,6 @@ const debugPuller: Puller = (request: PullRequest) => {
       const pullResponse = Schema.decodeUnknownSync(PullResponseSchema)(
         JSON.parse(responseText),
       );
-
       return {
         response: pullResponse,
         httpRequestInfo: {
@@ -189,7 +187,6 @@ export const ReplicacheLive = (
         concurrency: "unbounded",
         discard: true,
       }).pipe(Effect.catchAll(() => Effect.void));
-
       const client = new Replicache({
         licenseKey: "l2c75a896d85a4914a51e54a32338b556",
         name: user.id,
@@ -210,7 +207,6 @@ export const ReplicacheLive = (
         yield* Effect.promise(() => client.close());
       }).pipe(Effect.orDie),
   ).pipe(Effect.map(({ client }) => ({ client })));
-
   return Layer.scoped(ReplicacheService, replicacheServiceEffect).pipe(
     Layer.provide(RpcLogClientSelfContained),
   );
