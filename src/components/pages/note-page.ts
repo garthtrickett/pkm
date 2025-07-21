@@ -2,7 +2,16 @@
 import { LitElement, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
-import { Effect, Schema, Fiber, Duration, Exit, Cause, Either } from "effect";
+import {
+  Effect,
+  Schema,
+  Fiber,
+  Duration,
+  Exit,
+  Cause,
+  Either,
+  Option,
+} from "effect";
 import { runClientUnscoped } from "../../lib/client/runtime";
 import { ReplicacheService } from "../../lib/client/replicache";
 import styles from "./NotePage.module.css";
@@ -83,19 +92,16 @@ const update = (model: Model, action: Action): Model => {
       return { ...model, status: "error", error: action.payload };
   }
 };
-
 @customElement("note-page")
 export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
-
   private ctrl = new SamController<this, Model, Action, NotePageError>(
     this,
     { note: null, blocks: [], status: "loading", error: null },
     update,
     () => Effect.void,
   );
-
   private _replicacheUnsubscribe: (() => void) | undefined;
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
@@ -123,13 +129,23 @@ export class NotePage extends LitElement {
                 .then((allBlocks) => ({ note, allBlocks })),
             ),
           (result) => {
+            // --- THIS IS THE FIX ---
+            // If the note is not found, we check the component's status.
+            // If it's still in the initial 'loading' phase, we do nothing
+            // and simply wait for another subscription fire when the data arrives.
+            // If the note disappears later (status is 'idle'), then it's a real
+            // deletion, and we show the error.
             if (!result.note) {
-              this.ctrl.propose({
-                type: "INITIALIZE_ERROR",
-                payload: new NoteNotFoundError(),
-              });
+              if (this.ctrl.model.status !== "loading") {
+                this.ctrl.propose({
+                  type: "INITIALIZE_ERROR",
+                  payload: new NoteNotFoundError(),
+                });
+              }
+              // If status is 'loading', just wait.
               return;
             }
+            // --- END OF FIX ---
 
             const relevantBlocks = result.allBlocks.filter(
               (b): b is ReadonlyJSONValue & { note_id: string } =>
@@ -137,13 +153,30 @@ export class NotePage extends LitElement {
                 b !== null &&
                 (b as { note_id?: unknown }).note_id === this.id,
             );
-            const parseResult = Effect.all({
-              note: Schema.decodeUnknown(NoteSchema)(result.note),
-              blocks: Schema.decodeUnknown(Schema.Array(BlockSchema))(
-                relevantBlocks,
-              ),
-            }).pipe(Effect.mapError((cause) => new NoteParseError({ cause })));
-            Effect.runCallback(parseResult, {
+            const resilientParseEffect = Effect.gen(function* () {
+              const note = yield* Schema.decodeUnknown(NoteSchema)(
+                result.note,
+              ).pipe(Effect.mapError((cause) => new NoteParseError({ cause })));
+
+              const validBlocks: Block[] = [];
+              for (const blockJson of relevantBlocks) {
+                const blockOption =
+                  Schema.decodeUnknownOption(BlockSchema)(blockJson);
+                if (Option.isSome(blockOption)) {
+                  validBlocks.push(blockOption.value);
+                } else {
+                  yield* Effect.sync(() =>
+                    console.warn(
+                      "[note-page] Failed to parse a block from IndexedDB. Filtering it out.",
+                      { invalidData: blockJson },
+                    ),
+                  );
+                }
+              }
+
+              return { note, blocks: validBlocks };
+            });
+            Effect.runCallback(resilientParseEffect, {
               onExit: (exit) => {
                 if (Exit.isSuccess(exit)) {
                   const { note, blocks } = exit.value;
@@ -191,7 +224,6 @@ export class NotePage extends LitElement {
     };
     this._authUnsubscribe = authState.subscribe(handleAuthChange);
     handleAuthChange(authState.value);
-    // ADDED: Add event listener for pagehide
     window.addEventListener("pagehide", this._handlePageHide);
   }
 
@@ -206,15 +238,13 @@ export class NotePage extends LitElement {
     super.disconnectedCallback();
     this._replicacheUnsubscribe?.();
     this._authUnsubscribe?.();
-    // ADDED: Remove event listener and flush changes on disconnect
     window.removeEventListener("pagehide", this._handlePageHide);
-    this._handlePageHide(); // Also flush on component removal
+    this._handlePageHide();
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
   }
 
-  // ADDED: Extracted save logic into a reusable Effect
   private _flushChangesEffect = (): Effect.Effect<
     void,
     never,
@@ -238,23 +268,18 @@ export class NotePage extends LitElement {
           catch: (cause) => new NoteSaveError({ cause }),
         });
 
-        // This effect resolves to an Either<NoteSaveError, void>
         const result = yield* Effect.either(mutationEffect);
 
-        // Check if the Either is a Right (success)
         if (Either.isRight(result)) {
           this.ctrl.propose({ type: "SAVE_SUCCESS" });
         } else {
-          // If it's a Left (failure), the error is in the .left property
           this.ctrl.propose({
             type: "SAVE_ERROR",
-            payload: result.left, // The error is directly here
+            payload: result.left,
           });
         }
       }.bind(this),
     );
-
-  // ADDED: New handler for the pagehide event
   private _handlePageHide = () => {
     if (this.ctrl.model.status !== "saving") {
       return;
@@ -262,14 +287,10 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
-    // Run the save effect immediately without the debounce
     runClientUnscoped(this._flushChangesEffect());
   };
-
-  // MODIFIED: Simplified input handler
   private _handleInput(updateField: Partial<Pick<Note, "title" | "content">>) {
     this.ctrl.propose({ type: "UPDATE_FIELD", payload: updateField });
-
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
@@ -277,7 +298,6 @@ export class NotePage extends LitElement {
     const debouncedSave = Effect.sleep(Duration.millis(500)).pipe(
       Effect.andThen(this._flushChangesEffect()),
     );
-
     this._saveFiber = runClientUnscoped(debouncedSave);
   }
 
@@ -318,7 +338,6 @@ export class NotePage extends LitElement {
         return html`<span class="text-red-500">${errorMessage}</span>`;
       return "Saved";
     };
-
     return html`
       <div class=${styles.container}>
         <div class=${styles.editor}>
