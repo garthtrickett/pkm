@@ -20,7 +20,7 @@
       "DOM"
     ],
     "types": [
-      "bun-types" // gives you `declare const Bun …`
+      "bun-types",
     ]
   },
   "include": [
