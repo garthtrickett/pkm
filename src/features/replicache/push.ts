@@ -127,7 +127,7 @@ const processMutations = (
         // Apply the specific mutation logic
         yield* _(
           applyMutation(mutation).pipe(
-            Effect.provideService(Auth, { user, session: null }),
+            Effect.provideService(Auth, Auth.of({ user, session: null })), // Correct
           ),
         );
 

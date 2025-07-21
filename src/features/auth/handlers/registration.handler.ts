@@ -58,17 +58,14 @@ export const RegistrationRpcHandlers = {
           .returningAll()
           .executeTakeFirstOrThrow(),
       );
-
       yield* Effect.logInfo(
         { userId: newUser.id, email: newUser.email },
         "User created successfully",
       );
-
       const verificationToken = yield* createVerificationToken(
         newUser.id,
         newUser.email,
       ).pipe(Effect.provideService(Crypto, crypto));
-
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
       const { password_hash: _, ...publicUser } = newUser;
@@ -94,8 +91,11 @@ export const RegistrationRpcHandlers = {
             ),
           ),
       }),
-      Effect.catchAll((error) =>
-        Effect.logError("Unhandled error during signup", error).pipe(
+      Effect.catchAll((error) => {
+        if (error instanceof AuthError) {
+          return Effect.fail(error);
+        }
+        return Effect.logError("Unhandled error during signup", error).pipe(
           Effect.andThen(
             Effect.fail(
               new AuthError({
@@ -104,8 +104,8 @@ export const RegistrationRpcHandlers = {
               }),
             ),
           ),
-        ),
-      ),
+        );
+      }),
     ),
 
   verifyEmail: ({ token }: VerifyEmailPayload) =>
@@ -116,7 +116,6 @@ export const RegistrationRpcHandlers = {
       );
       const db = yield* Db;
       const crypto = yield* Crypto;
-
       const storedToken = yield* Effect.promise(() =>
         db
           .deleteFrom("email_verification_token")
@@ -124,7 +123,6 @@ export const RegistrationRpcHandlers = {
           .returningAll()
           .executeTakeFirst(),
       ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
-
       if (!storedToken || !isWithinExpirationDate(storedToken.expires_at)) {
         return yield* Effect.fail(
           new TokenInvalidError({ cause: "Token not found or expired" }),
@@ -139,7 +137,6 @@ export const RegistrationRpcHandlers = {
           .returningAll()
           .executeTakeFirstOrThrow(),
       ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
-
       yield* Effect.logInfo({ userId: user.id }, "Email verified successfully");
 
       const sessionId = yield* createSessionEffect(user.id).pipe(
@@ -157,20 +154,31 @@ export const RegistrationRpcHandlers = {
             }),
           ),
       }),
-      Effect.catchAll((error) =>
-        Effect.logError(
-          "Unhandled error during email verification",
-          error,
+      // ✅ FIX: Add a check to pass through existing AuthErrors
+      Effect.catchAll((error) => {
+        // [!code focus]
+        if (error instanceof AuthError) {
+          // [!code focus]
+          return Effect.fail(error); // [!code focus]
+        } // [!code focus]
+        return Effect.logError(
+          // [!code focus]
+          "Unhandled error during email verification", // [!code focus]
+          error, // [!code focus]
         ).pipe(
+          // [!code focus]
           Effect.andThen(
+            // [!code focus]
             Effect.fail(
+              // [!code focus]
               new AuthError({
-                _tag: "InternalServerError",
-                message: "An internal server error occurred.",
-              }),
-            ),
-          ),
-        ),
-      ),
+                // [!code focus]
+                _tag: "InternalServerError", // [!code focus]
+                message: "An internal server error occurred.", // [!code focus]
+              }), // [!code focus]
+            ), // [!code focus]
+          ), // [!code focus]
+        ); // [!code focus]
+      }), // [!code focus]
     ),
 };

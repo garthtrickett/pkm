@@ -12,8 +12,7 @@
     "db:migrate": "bun run src/db/migrator.ts up",
     "db:seed": "bun run src/db/seed.ts",
     "migrate": "bun run db:migrate && bun run db:generate && bun run db:seed",
-    "migrate:down": "bun run db/migrator.ts down",
-    "test": "vitest"
+    "migrate:down": "bun run db/migrator.ts down"
   },
   "devDependencies": {
     "@effect/vitest": "^0.24.1",
