@@ -1,4 +1,4 @@
-// FILE: ./src/components/pages/notes-page.ts
+// FILE: src/components/pages/notes-page.ts
 import { LitElement, html } from "lit";
 import { customElement } from "lit/decorators.js";
 import { repeat } from "lit-html/directives/repeat.js";
@@ -22,15 +22,19 @@ import {
 } from "../../lib/client/errors";
 
 // --- Model ---
+type Status = "loading" | "idle" | "error";
 interface Model {
   notes: Note[];
   isCreating: boolean;
   error: NotesPageError | null;
+  status: Status;
 }
 
 // --- Actions ---
 type Action =
+  | { type: "INITIALIZE_START" }
   | { type: "NOTES_UPDATED"; payload: Note[] }
+  | { type: "INITIALIZE_ERROR"; payload: NotesPageError }
   | { type: "CREATE_NOTE_START" }
   | { type: "CREATE_NOTE_COMPLETE" }
   | { type: "CREATE_NOTE_ERROR"; payload: NoteCreationError }
@@ -41,9 +45,14 @@ type Action =
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
   switch (action.type) {
+    case "INITIALIZE_START":
+      return { ...model, status: "loading", error: null };
+    case "INITIALIZE_ERROR":
+      return { ...model, status: "error", error: action.payload };
     case "NOTES_UPDATED":
       return {
         ...model,
+        status: "idle",
         notes: action.payload.sort(
           (a, b) =>
             new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
@@ -118,7 +127,7 @@ const handleAction = (
 export class NotesPage extends LitElement {
   private ctrl = new ReactiveSamController<this, Model, Action, NotesPageError>(
     this,
-    { notes: [], isCreating: false, error: null },
+    { notes: [], isCreating: false, error: null, status: "loading" },
     update,
     (action, model, propose) =>
       handleAction(action, model, propose).pipe(
@@ -144,6 +153,7 @@ export class NotesPage extends LitElement {
           "info",
           "[NotesPage] Component connected, initializing Replicache subscription.",
         );
+        this.ctrl.propose({ type: "INITIALIZE_START" });
         const replicache = yield* ReplicacheService;
 
         this._replicacheUnsubscribe?.();
@@ -197,7 +207,7 @@ export class NotesPage extends LitElement {
   }
 
   override render() {
-    const { notes, isCreating, error } = this.ctrl.model;
+    const { notes, isCreating, error, status } = this.ctrl.model;
     const getErrorMessage = (e: NotesPageError | null): string | null => {
       if (!e) return null;
       switch (e._tag) {
@@ -208,6 +218,16 @@ export class NotesPage extends LitElement {
       }
     };
     const errorMessage = getErrorMessage(error);
+
+    if (status === "loading") {
+      return html`
+        <div class=${styles.container}>
+          <div class=${styles.emptyState}>
+            <p>Loading notes...</p>
+          </div>
+        </div>
+      `;
+    }
 
     return html`
       <div class=${styles.container}>
