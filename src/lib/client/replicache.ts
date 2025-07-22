@@ -20,7 +20,6 @@ import { PullResponseSchema } from "../shared/replicache-schemas";
 import { clientLog } from "./clientLog";
 import { RpcLogClientLive } from "./rpc";
 
-// ✅ FIX 1: Define a custom error class for HTTP-specific pull errors.
 class PullerHttpError extends Error {
   httpStatusCode: number;
   errorMessage: string;
@@ -111,7 +110,6 @@ const debugPuller: Puller = (request: PullRequest) => {
       const responseText = await response.text();
 
       if (!response.ok) {
-        // ✅ FIX 2: Throw an instance of our new error class.
         throw new PullerHttpError(
           `HTTP Error: ${response.status}`,
           response.status,
@@ -194,19 +192,27 @@ export const ReplicacheLive = (
         puller: debugPuller,
         mutators,
       });
-      const ws = yield* setupWebSocket(client).pipe(Effect.orDie);
-      return { client, ws };
+
+      // Fork the WebSocket manager to run in the background.
+      // It will live and die with this scope.
+      yield* setupWebSocket(client).pipe(Effect.forkDaemon);
+
+      // We no longer receive a `ws` object, so we only return the client.
+      return { client };
     }),
-    ({ client, ws }) =>
+    ({ client }) =>
+      // The release function no longer receives `ws`.
       Effect.gen(function* () {
         yield* clientLog(
           "info",
-          "[ReplicacheLive] Releasing scope. Closing WebSocket and Replicache client.",
+          "[ReplicacheLive] Releasing scope. Closing Replicache client.",
         );
-        ws.close();
+        // The forked WebSocket daemon is automatically interrupted and cleaned up.
+        // We only need to close the Replicache client.
         yield* Effect.promise(() => client.close());
       }).pipe(Effect.orDie),
   ).pipe(Effect.map(({ client }) => ({ client })));
+
   return Layer.scoped(ReplicacheService, replicacheServiceEffect).pipe(
     Layer.provide(RpcLogClientSelfContained),
   );
