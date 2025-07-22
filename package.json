@@ -12,7 +12,7 @@
     "db:migrate": "bun run src/db/migrator.ts up",
     "db:seed": "bun run src/db/seed.ts",
     "migrate": "bun run db:migrate && bun run db:generate && bun run db:seed",
-    "migrate:down": "bun run db/migrator.ts down",
+    "migrate:down": "bun run src/db/migrator.ts down",
     "test:client": "web-test-runner --coverage",
     "test:node": "vitest"
   },

@@ -7,6 +7,8 @@ import * as m03 from "../../migrations/03_create_auth_tables";
 import * as m04 from "../../migrations/04_create_block";
 import * as m05 from "../../migrations/05_create_replicache_tables";
 import * as m06 from "../../migrations/06_create_poke_log";
+import * as m07 from "../../migrations/07_create_links_table";
+import * as m08 from "../../migrations/08_create_task_table"; // Add this line
 
 export const centralMigrationObjects: Record<string, Migration> = {
   "01_create_user": { up: m01.up, down: m01.down },
@@ -15,4 +17,6 @@ export const centralMigrationObjects: Record<string, Migration> = {
   "04_create_block": { up: m04.up, down: m04.down },
   "05_create_replicache_tables": { up: m05.up, down: m05.down },
   "06_create_poke_log": { up: m06.up, down: m06.down },
+  "07_create_links_table": { up: m07.up, down: m07.down },
+  "08_create_task_table": { up: m08.up, down: m08.down }, // And this line
 };

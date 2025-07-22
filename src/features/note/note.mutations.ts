@@ -1,10 +1,37 @@
-// src/features/note/note.mutations.ts
-import { Effect, Schema } from "effect";
+// FILE: src/features/note/note.mutations.ts
+import { Effect, Schema, Layer } from "effect";
 import { sql } from "kysely";
 import { Db } from "../../db/DbTag";
 import { Auth } from "../../lib/server/auth";
-import { NoteIdSchema, UserIdSchema } from "../../lib/shared/schemas";
+import { NoteIdSchema, UserId, UserIdSchema } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
+import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
+import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
+import type { NewBlock } from "../../types/generated/public/Block";
+import type { NoteId } from "../../types/generated/public/Note";
+
+// --- Placeholder for a future, more advanced parser ---
+const parseContentToBlocks = (
+  noteId: NoteId,
+  userId: UserId,
+  content: string,
+): NewBlock[] => {
+  return content.split("\n").map((line, index) => ({
+    note_id: noteId,
+    user_id: userId,
+    type: "text",
+    content: line,
+    fields: {},
+    tags: [],
+    links: [],
+    transclusions: [],
+    file_path: "",
+    depth: 0,
+    order: index,
+    version: 1,
+  }));
+};
+// ---
 
 // --- Mutation Argument Schemas ---
 export const CreateNoteArgsSchema = Schema.Struct({
@@ -46,18 +73,28 @@ export const handleCreateNote = (
       updated_at: now,
     };
 
-    yield* Effect.promise(() => db.insertInto("note").values(newNote).execute());
+    yield* Effect.promise(() =>
+      db.insertInto("note").values(newNote).execute(),
+    );
   });
 
 export const handleUpdateNote = (
   args: UpdateNoteArgs,
 ): Effect.Effect<void, Error, Db | Auth> =>
   Effect.gen(function* () {
-    const db = yield* Db;
+    yield* Effect.logDebug(
+      `[handleUpdateNote] Starting update for noteId: ${args.id}`,
+    );
+    const db = yield* Db; // This 'db' object IS the transaction from push.ts
     const { user } = yield* Auth;
+    const linkService = yield* LinkService;
+    const taskService = yield* TaskService;
 
-    yield* Effect.promise(() =>
-      db
+    // All async logic now happens inside this single promise,
+    // using the 'db' object which is already a transaction.
+    const updateAllEffect = Effect.promise(async () => {
+      // 1. Update the main note content
+      await db
         .updateTable("note")
         .set({
           title: args.title,
@@ -67,9 +104,46 @@ export const handleUpdateNote = (
         })
         .where("id", "=", args.id)
         .where("user_id", "=", user!.id)
-        .execute(),
+        .execute();
+
+      // 2. Delete old blocks associated with the note
+      await db.deleteFrom("block").where("note_id", "=", args.id).execute();
+
+      // 3. Parse new content and insert new blocks
+      const newBlocks = parseContentToBlocks(args.id, user!.id, args.content);
+      if (newBlocks.length > 0) {
+        await db.insertInto("block").values(newBlocks).execute();
+      }
+
+      // --- START OF FIX: Provide the Db (transaction) to the services ---
+      // 4. Sync links and tasks using the SAME transaction.
+      // We create an effect pipeline that provides the `db` service to each sub-task.
+      const syncServicesEffect = Effect.all([
+        linkService.updateLinksForNote(args.id, user!.id),
+        taskService.syncTasksForNote(args.id, user!.id),
+      ]).pipe(Effect.provideService(Db, db)); // <-- This provides the dependency
+
+      // Run the pipeline.
+      await Effect.runPromise(syncServicesEffect);
+      // --- END OF FIX ---
+    }).pipe(
+      Effect.catchAll((cause) =>
+        Effect.logError("!!! DATABASE TRANSACTION FAILED !!!", cause).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new Error("Failed to update note and blocks", { cause }),
+            ),
+          ),
+        ),
+      ),
     );
-  });
+
+    yield* updateAllEffect;
+
+    yield* Effect.logDebug(
+      `[handleUpdateNote] Finished update for noteId: ${args.id}`,
+    );
+  }).pipe(Effect.provide(Layer.merge(LinkServiceLive, TaskServiceLive)));
 
 export const handleDeleteNote = (
   args: DeleteNoteArgs,
