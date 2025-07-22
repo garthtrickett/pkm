@@ -23,7 +23,7 @@ import {
   type NoteId,
 } from "../../lib/shared/schemas";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
-import { SamController } from "../../lib/client/sam-controller";
+import { ReactiveSamController } from "../../lib/client/reactive-sam-controller";
 import type { ReadonlyJSONValue } from "replicache";
 import {
   NoteNotFoundError,
@@ -96,7 +96,7 @@ const update = (model: Model, action: Action): Model => {
 export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
-  private ctrl = new SamController<this, Model, Action, NotePageError>(
+  private ctrl = new ReactiveSamController<this, Model, Action, NotePageError>(
     this,
     { note: null, blocks: [], status: "loading", error: null },
     update,

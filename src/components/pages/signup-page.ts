@@ -1,18 +1,15 @@
-// src/components/pages/signup-page.ts
+// FILE: src/components/pages/signup-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement } from "lit/decorators.js";
-import { Effect, Schema } from "effect";
-import { runClientUnscoped } from "../../lib/client/runtime";
+import { Effect, Schema, Either } from "effect";
+import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
-import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
+import { RpcAuthClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/auth";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./SignupPage.module.css";
 import { SamController } from "../../lib/client/sam-controller";
-import { clientLog } from "../../lib/client/clientLog";
-import type { LocationService } from "../../lib/client/LocationService";
-// ✅ 1. Import the new typed errors
 import {
   PasswordsDoNotMatchError,
   EmailInUseError,
@@ -25,7 +22,6 @@ interface Model {
   email: string;
   password: string;
   confirmPassword: string;
-  // ✅ 2. Use the typed error union
   error: SignupError | null;
   isLoading: boolean;
   isSuccess: boolean;
@@ -38,7 +34,6 @@ type Action =
   | { type: "UPDATE_CONFIRM_PASSWORD"; payload: string }
   | { type: "SIGNUP_START" }
   | { type: "SIGNUP_SUCCESS" }
-  // ✅ 3. The error payload is now a typed error object
   | { type: "SIGNUP_ERROR"; payload: SignupError };
 
 // --- Pure Update Function ---
@@ -55,76 +50,14 @@ const update = (model: Model, action: Action): Model => {
     case "SIGNUP_SUCCESS":
       return { ...model, isLoading: false, isSuccess: true };
     case "SIGNUP_ERROR":
-      // ✅ 4. Store the actual error object in the model
       return { ...model, isLoading: false, error: action.payload };
   }
 };
 
-// --- Action Handler ---
-const handleAction = (
-  action: Action,
-  model: Model,
-  propose: (a: Action) => void,
-): Effect.Effect<
-  void,
-  never,
-  RpcAuthClient | RpcLogClient | LocationService
-> => {
-  if (action.type === "SIGNUP_START") {
-    const { email, password, confirmPassword } = model;
-
-    // ✅ 5. Define an effect for the core logic that can FAIL with our typed errors.
-    const signupEffect: Effect.Effect<unknown, SignupError, RpcAuthClient> =
-      Effect.gen(function* () {
-        if (password !== confirmPassword) {
-          return yield* Effect.fail(new PasswordsDoNotMatchError());
-        }
-        const rpcClient = yield* RpcAuthClient;
-        // Map the backend's AuthError to our specific, typed client errors
-        return yield* rpcClient.signup({ email, password }).pipe(
-          Effect.catchAll((error) =>
-            Schema.decodeUnknown(AuthError)(error).pipe(
-              Effect.matchEffect({
-                onSuccess: (authError) => {
-                  const specificError: SignupError =
-                    authError._tag === "EmailAlreadyExistsError"
-                      ? new EmailInUseError()
-                      : new UnknownAuthError({ cause: authError });
-                  return Effect.fail(specificError);
-                },
-                onFailure: (parseError) =>
-                  Effect.fail(new UnknownAuthError({ cause: parseError })),
-              }),
-            ),
-          ),
-        );
-      });
-
-    // ✅ 6. Execute the logic and handle the success/failure at the edge.
-    return signupEffect.pipe(
-      Effect.matchEffect({
-        onSuccess: () =>
-          navigate("/check-email").pipe(
-            Effect.andThen(
-              Effect.sync(() => propose({ type: "SIGNUP_SUCCESS" })),
-            ),
-            Effect.catchAll((err) =>
-              clientLog("error", "Navigation failed after signup", err),
-            ),
-          ),
-        onFailure: (error) =>
-          Effect.sync(() => propose({ type: "SIGNUP_ERROR", payload: error })),
-      }),
-      Effect.asVoid,
-    );
-  }
-  return Effect.void;
-};
-
-// --- Component Definition ---
 @customElement("signup-page")
 export class SignupPage extends LitElement {
-  private ctrl = new SamController<this, Model, Action, never>(
+  // ✅ FIX: Instantiate the controller with the correct 3 type arguments.
+  private ctrl = new SamController<this, Model, Action>(
     this,
     {
       email: "",
@@ -135,13 +68,61 @@ export class SignupPage extends LitElement {
       isSuccess: false,
     },
     update,
-    handleAction,
   );
+
+  // The main async orchestration logic lives in the component.
+  private _handleSubmit = async (e: Event) => {
+    e.preventDefault();
+
+    // Step 1: Propose the starting action and wait for the UI to update.
+    this.ctrl.propose({ type: "SIGNUP_START" });
+    await this.updateComplete;
+
+    const { email, password, confirmPassword } = this.ctrl.model;
+
+    // Step 2: Define the core asynchronous logic as an Effect.
+    const signupEffect = Effect.gen(function* () {
+      if (password !== confirmPassword) {
+        return yield* Effect.fail(new PasswordsDoNotMatchError());
+      }
+      const rpcClient = yield* RpcAuthClient;
+      return yield* rpcClient.signup({ email, password }).pipe(
+        Effect.catchAll((error) =>
+          Schema.decodeUnknown(AuthError)(error).pipe(
+            Effect.matchEffect({
+              onSuccess: (authError) => {
+                const specificError: SignupError =
+                  authError._tag === "EmailAlreadyExistsError"
+                    ? new EmailInUseError()
+                    : new UnknownAuthError({ cause: authError });
+                return Effect.fail(specificError);
+              },
+              onFailure: (parseError) =>
+                Effect.fail(new UnknownAuthError({ cause: parseError })),
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Step 3: Run the effect and get the result.
+    const result = await runClientPromise(Effect.either(signupEffect));
+
+    // Step 4: Propose the final action based on the result.
+    Either.match(result, {
+      onLeft: (error) =>
+        this.ctrl.propose({ type: "SIGNUP_ERROR", payload: error }),
+      onRight: () => {
+        this.ctrl.propose({ type: "SIGNUP_SUCCESS" });
+        // Handle side-effects like navigation here.
+        runClientUnscoped(navigate("/check-email"));
+      },
+    });
+  };
 
   override render(): TemplateResult {
     const model = this.ctrl.model;
 
-    // ✅ 7. Create a helper to map the typed error to a user-friendly string
     const getErrorMessage = (error: SignupError | null): string | null => {
       if (!error) return null;
       switch (error._tag) {
@@ -159,12 +140,7 @@ export class SignupPage extends LitElement {
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
           <h2 class=${styles.title}>Create an Account</h2>
-          <form
-            @submit=${(e: Event) => {
-              e.preventDefault();
-              this.ctrl.propose({ type: "SIGNUP_START" });
-            }}
-          >
+          <form @submit=${this._handleSubmit}>
             <div class="space-y-4">
               ${NotionInput({
                 id: "email",

@@ -1,17 +1,12 @@
-// src/components/features/change-password-form.ts
+// FILE: src/components/features/change-password-form.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { Effect, Queue, Fiber, Stream, Schema } from "effect";
-import { runClientUnscoped } from "../../lib/client/runtime";
-import {
-  RpcAuthClient,
-  RpcAuthClientLive,
-  RpcLogClient,
-} from "../../lib/client/rpc";
+import { Effect, Schema, Either } from "effect";
+import { runClientPromise } from "../../lib/client/runtime";
+import { RpcAuthClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
-
 import {
   IncorrectPasswordError,
   UnknownPasswordError,
@@ -79,104 +74,67 @@ export class ChangePasswordForm extends LitElement {
     confirmPassword: "",
   };
 
-  private readonly _actionQueue = Effect.runSync(Queue.unbounded<Action>());
-  private _mainFiber?: Fiber.RuntimeFiber<void, unknown>;
-
-  private _propose = (action: Action) =>
-    runClientUnscoped(Queue.offer(this._actionQueue, action));
-
-  private _handleAction = (
-    action: Action,
-  ): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
+  private _update(action: Action) {
     this.model = update(this.model, action);
+  }
 
-    if (action.type === "CHANGE_PASSWORD_START") {
-      const { oldPassword, newPassword, confirmPassword } = this.model;
+  private _onSubmit = async (e: Event) => {
+    e.preventDefault();
 
-      if (newPassword !== confirmPassword) {
-        this._propose({
-          type: "CHANGE_PASSWORD_ERROR",
-          payload: "New passwords do not match.",
-        });
-        return Effect.void;
-      }
+    this._update({ type: "CHANGE_PASSWORD_START" });
+    // no need to `await this.updateComplete` as loading state is self-contained.
 
-      const changePasswordEffect = Effect.gen(function* () {
-        const rpcClient = yield* RpcAuthClient;
-        return yield* rpcClient
-          .changePassword({ oldPassword, newPassword })
-          .pipe(
-            Effect.catchAll((error) =>
-              Schema.decodeUnknown(AuthError)(error).pipe(
-                Effect.matchEffect({
-                  onSuccess: (authError) => {
-                    const specificError:
-                      | IncorrectPasswordError
-                      | UnknownPasswordError =
-                      authError._tag === "Unauthorized"
-                        ? new IncorrectPasswordError()
-                        : new UnknownPasswordError({ cause: authError });
-                    return Effect.fail(specificError);
-                  },
-                  onFailure: (parseError) =>
-                    Effect.fail(
-                      new UnknownPasswordError({ cause: parseError }),
-                    ),
-                }),
-              ),
-            ),
-          );
+    const { oldPassword, newPassword, confirmPassword } = this.model;
+
+    if (newPassword !== confirmPassword) {
+      this._update({
+        type: "CHANGE_PASSWORD_ERROR",
+        payload: "New passwords do not match.",
       });
-
-      return changePasswordEffect.pipe(
-        Effect.matchEffect({
-          onSuccess: () => this._propose({ type: "CHANGE_PASSWORD_SUCCESS" }),
-          onFailure: (error) => {
-            const message =
-              error._tag === "IncorrectPasswordError"
-                ? "Incorrect old password provided."
-                : "An unknown error occurred.";
-            return this._propose({
-              type: "CHANGE_PASSWORD_ERROR",
-              payload: message,
-            });
-          },
-        }),
-        Effect.asVoid,
-      );
+      return;
     }
 
-    if (action.type === "CHANGE_PASSWORD_SUCCESS") {
-      this.dispatchEvent(
-        new CustomEvent("password-changed-success", {
-          bubbles: true,
-          composed: true,
-        }),
-      );
-    }
+    const changePasswordEffect = RpcAuthClient.pipe(
+      Effect.flatMap((rpc) => rpc.changePassword({ oldPassword, newPassword })),
+      Effect.catchAll((error) =>
+        Schema.decodeUnknown(AuthError)(error).pipe(
+          Effect.matchEffect({
+            onSuccess: (authError) => {
+              const specificError =
+                authError._tag === "Unauthorized"
+                  ? new IncorrectPasswordError()
+                  : new UnknownPasswordError({ cause: authError });
+              return Effect.fail(specificError);
+            },
+            onFailure: (parseError) =>
+              Effect.fail(new UnknownPasswordError({ cause: parseError })),
+          }),
+        ),
+      ),
+    );
 
-    return Effect.void;
+    const result = await runClientPromise(Effect.either(changePasswordEffect));
+
+    Either.match(result, {
+      onLeft: (error) => {
+        const message =
+          error._tag === "IncorrectPasswordError"
+            ? "Incorrect old password provided."
+            : "An unknown error occurred.";
+        this._update({ type: "CHANGE_PASSWORD_ERROR", payload: message });
+      },
+      onRight: () => {
+        this._update({ type: "CHANGE_PASSWORD_SUCCESS" });
+        this.dispatchEvent(
+          new CustomEvent("password-changed-success", {
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      },
+    });
   };
 
-  private readonly _run = Stream.fromQueue(this._actionQueue).pipe(
-    Stream.runForEach(this._handleAction),
-    Effect.provide(RpcAuthClientLive),
-  );
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this._mainFiber = runClientUnscoped(this._run);
-  }
-
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this._mainFiber) {
-      runClientUnscoped(Fiber.interrupt(this._mainFiber));
-    }
-  }
-
-  // ✅ FIX: Convert methods used as event handlers to arrow function properties
-  // This binds `this` correctly and resolves the unbound-method lint error.
   private _onCancel = () => {
     this.dispatchEvent(
       new CustomEvent("change-password-cancelled", {
@@ -184,12 +142,6 @@ export class ChangePasswordForm extends LitElement {
         composed: true,
       }),
     );
-  };
-
-  // ✅ FIX: Convert methods used as event handlers to arrow function properties
-  private _onSubmit = (e: Event) => {
-    e.preventDefault();
-    this._propose({ type: "CHANGE_PASSWORD_START" });
   };
 
   override render() {
@@ -201,7 +153,7 @@ export class ChangePasswordForm extends LitElement {
           type: "password",
           value: this.model.oldPassword,
           onInput: (e) =>
-            this._propose({
+            this._update({
               type: "UPDATE_OLD_PASSWORD",
               payload: (e.target as HTMLInputElement).value,
             }),
@@ -213,7 +165,7 @@ export class ChangePasswordForm extends LitElement {
           type: "password",
           value: this.model.newPassword,
           onInput: (e) =>
-            this._propose({
+            this._update({
               type: "UPDATE_NEW_PASSWORD",
               payload: (e.target as HTMLInputElement).value,
             }),
@@ -225,7 +177,7 @@ export class ChangePasswordForm extends LitElement {
           type: "password",
           value: this.model.confirmPassword,
           onInput: (e) =>
-            this._propose({
+            this._update({
               type: "UPDATE_CONFIRM_PASSWORD",
               payload: (e.target as HTMLInputElement).value,
             }),

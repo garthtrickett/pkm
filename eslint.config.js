@@ -21,13 +21,14 @@ export default tseslint.config(
       "tailwind.config.js",
       ".kanelrc.js",
       "eslint.config.js",
+      "**/*test.ts",
     ],
   },
 
-  // 2. Base recommended rules for TypeScript [cite: 382]
+  // 2. Base recommended rules for TypeScript
   ...tseslint.configs.recommendedTypeChecked,
 
-  // 3. Web Component and Lit rules (only apply to components/) [cite: 382]
+  // 3. Web Component and Lit rules (only apply to components/)
   {
     files: ["components/**/*.ts"],
     plugins: {
@@ -70,7 +71,7 @@ export default tseslint.config(
     },
   },
 
-  // 4. Project-wide settings & rule overrides [cite: 385]
+  // 4. Project-wide settings & rule overrides
   {
     languageOptions: {
       parserOptions: {

@@ -1,7 +1,7 @@
-// src/components/pages/profile-page.ts
+// FILE: src/components/pages/profile-page.ts
 import { LitElement, html, nothing } from "lit";
 import { customElement } from "lit/decorators.js";
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 import {
   authState,
   proposeAuthAction,
@@ -9,11 +9,10 @@ import {
 } from "../../lib/client/stores/authStore";
 import { NotionButton } from "../ui/notion-button";
 import styles from "./ProfilePage.module.css";
-import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import "../features/change-password-form";
 import { SamController } from "../../lib/client/sam-controller";
-// ✅ 1. Import the new typed error
 import { AvatarUploadError } from "../../lib/client/errors";
+import { runClientPromise } from "../../lib/client/runtime";
 
 // --- Model ---
 interface Model {
@@ -27,9 +26,8 @@ interface Model {
 // --- Actions ---
 type Action =
   | { type: "AUTH_STATE_CHANGED"; payload: AuthModel }
-  | { type: "UPLOAD_START"; payload: File }
+  | { type: "UPLOAD_START" }
   | { type: "UPLOAD_SUCCESS"; payload: string }
-  // ✅ 2. The error payload is now a typed error object
   | { type: "UPLOAD_ERROR"; payload: AvatarUploadError }
   | { type: "TOGGLE_CHANGE_PASSWORD_FORM" }
   | { type: "PASSWORD_CHANGE_SUCCESS" }
@@ -61,7 +59,6 @@ const update = (model: Model, action: Action): Model => {
         message: "Avatar updated!",
       };
     }
-    // ✅ 3. Extract the user-friendly message from the error object
     case "UPLOAD_ERROR":
       return {
         ...model,
@@ -95,17 +92,48 @@ const update = (model: Model, action: Action): Model => {
   }
 };
 
-// --- Effectful Action Handler ---
-const handleAction = (
-  action: Action,
-  _model: Model,
-  propose: (a: Action) => void,
-): Effect.Effect<void, never, RpcLogClient> => {
-  if (action.type === "UPLOAD_START") {
-    const formData = new FormData();
-    formData.append("avatar", action.payload);
+@customElement("profile-page")
+export class ProfilePage extends LitElement {
+  // ✅ 1. Instantiate the new, simpler SamController.
+  private ctrl = new SamController<this, Model, Action>(
+    this,
+    {
+      auth: authState.value,
+      status: "idle",
+      message: null,
+      loadingAction: null,
+      isChangingPassword: false,
+    },
+    update,
+  );
 
-    // ✅ 4. This effect now describes the logic and its specific failure type
+  private _authUnsubscribe?: () => void;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this._authUnsubscribe = authState.subscribe((newAuthState) =>
+      this.ctrl.propose({ type: "AUTH_STATE_CHANGED", payload: newAuthState }),
+    );
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this._authUnsubscribe?.();
+  }
+
+  // ✅ 2. Create an async event handler to orchestrate the avatar upload.
+  private _handleFileChange = async (e: Event) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+
+    // Step A: Propose start action and wait for UI to update
+    this.ctrl.propose({ type: "UPLOAD_START" });
+    await this.updateComplete;
+
+    // Step B: Define the async logic as an Effect
+    const formData = new FormData();
+    formData.append("avatar", file);
+
     const uploadEffect = Effect.tryPromise({
       try: () => fetch("/api/user/avatar", { method: "POST", body: formData }),
       catch: (cause) =>
@@ -134,66 +162,20 @@ const handleAction = (
       ),
     );
 
-    // ✅ 5. This effect handles the outcome, mapping success/failure to state-updating actions
-    return uploadEffect.pipe(
-      Effect.matchEffect({
-        onSuccess: (json) =>
-          Effect.sync(() =>
-            propose({
-              type: "UPLOAD_SUCCESS",
-              payload: json.avatarUrl,
-            }),
-          ),
-        onFailure: (
-          error, // `error` here is our typed `AvatarUploadError`
-        ) =>
-          clientLog("error", "[profile-page] Avatar upload failed.", {
-            error,
-          }).pipe(
-            Effect.andThen(
-              Effect.sync(() =>
-                propose({
-                  type: "UPLOAD_ERROR",
-                  payload: error, // Pass the whole error object to the update function
-                }),
-              ),
-            ),
-          ),
-      }),
-    );
-  }
-  return Effect.void;
-};
+    // Step C: Run the effect
+    const result = await runClientPromise(Effect.either(uploadEffect));
 
-@customElement("profile-page")
-export class ProfilePage extends LitElement {
-  // ✅ 6. The SamController is now aware of the specific error type
-  private ctrl = new SamController<this, Model, Action, AvatarUploadError>(
-    this,
-    {
-      auth: authState.value,
-      status: "idle",
-      message: null,
-      loadingAction: null,
-      isChangingPassword: false,
-    },
-    update,
-    handleAction,
-  );
-
-  private _authUnsubscribe?: () => void;
-
-  override connectedCallback(): void {
-    super.connectedCallback();
-    this._authUnsubscribe = authState.subscribe((newAuthState) =>
-      this.ctrl.propose({ type: "AUTH_STATE_CHANGED", payload: newAuthState }),
-    );
-  }
-
-  override disconnectedCallback(): void {
-    super.disconnectedCallback();
-    this._authUnsubscribe?.();
-  }
+    // Step D: Propose the final action
+    Either.match(result, {
+      onLeft: (error) =>
+        this.ctrl.propose({ type: "UPLOAD_ERROR", payload: error }),
+      onRight: (json) =>
+        this.ctrl.propose({
+          type: "UPLOAD_SUCCESS",
+          payload: json.avatarUrl,
+        }),
+    });
+  };
 
   protected override createRenderRoot() {
     return this;
@@ -206,11 +188,6 @@ export class ProfilePage extends LitElement {
     const avatarUrl =
       user.avatar_url ||
       `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email)}`;
-
-    const onFileChange = (e: Event) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) this.ctrl.propose({ type: "UPLOAD_START", payload: file });
-    };
 
     return html`
       <div class=${styles.container}>
@@ -243,7 +220,7 @@ export class ProfilePage extends LitElement {
                     type="file"
                     id="avatar-upload"
                     class="hidden"
-                    @change=${onFileChange}
+                    @change=${this._handleFileChange}
                     accept="image/png, image/jpeg, image/webp"
                   />
                   ${NotionButton({

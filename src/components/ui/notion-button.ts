@@ -1,4 +1,4 @@
-// File: ./components/ui/notion-button.ts
+// File: ./src/components/ui/notion-button.ts
 import { html, type TemplateResult, nothing } from "lit-html";
 import { classMap } from "lit-html/directives/class-map.js";
 
@@ -27,16 +27,19 @@ export const NotionButton = (props: NotionButtonProps): TemplateResult => {
   } = props;
 
   const _handleClick = (e: MouseEvent) => {
-    // Preserve the micro-interaction animation
     const button = e.currentTarget as HTMLElement;
-    button.animate(
-      [
-        { transform: "scale(1)" },
-        { transform: "scale(0.95)" },
-        { transform: "scale(1)" },
-      ],
-      { duration: 0.2, easing: "ease-in-out" },
-    );
+
+    // ✅ FIX: Check if the 'animate' method exists before calling it.
+    if (typeof button.animate === "function") {
+      button.animate(
+        [
+          { transform: "scale(1)" },
+          { transform: "scale(0.95)" },
+          { transform: "scale(1)" },
+        ],
+        { duration: 150, easing: "ease-in-out" },
+      );
+    }
 
     // Call the provided onClick handler if it exists
     onClick?.(e);

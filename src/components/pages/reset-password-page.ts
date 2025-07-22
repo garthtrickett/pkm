@@ -1,16 +1,15 @@
-// src/components/pages/reset-password-page.ts
+// FILE: src/components/pages/reset-password-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { Effect, Schema, pipe } from "effect";
+import { Effect, Schema, pipe, Either } from "effect";
+import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
 import { navigate } from "../../lib/client/router";
-import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
+import { RpcAuthClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import styles from "./LoginPage.module.css";
-import type { LocationService } from "../../lib/client/LocationService";
 import { SamController } from "../../lib/client/sam-controller";
-// ✅ 1. Import the new typed errors
 import {
   PasswordTooShortError,
   PasswordsDoNotMatchError,
@@ -23,7 +22,6 @@ import {
 interface Model {
   newPassword: string;
   confirmPassword: string;
-  // ✅ 2. Use the typed error union
   error: ResetPasswordError | null;
   isLoading: boolean;
   isSuccess: boolean;
@@ -33,9 +31,8 @@ interface Model {
 type Action =
   | { type: "UPDATE_NEW_PASSWORD"; payload: string }
   | { type: "UPDATE_CONFIRM_PASSWORD"; payload: string }
-  | { type: "RESET_START"; payload: { token: string } }
+  | { type: "RESET_START" }
   | { type: "RESET_SUCCESS" }
-  // ✅ 3. The error payload is now a typed error object
   | { type: "RESET_ERROR"; payload: ResetPasswordError };
 
 // --- Pure Update Function ---
@@ -50,41 +47,52 @@ const update = (model: Model, action: Action): Model => {
     case "RESET_SUCCESS":
       return { ...model, isLoading: false, isSuccess: true };
     case "RESET_ERROR":
-      // ✅ 4. Store the actual error object in the model
       return { ...model, isLoading: false, error: action.payload };
     default:
       return model;
   }
 };
 
-// --- Effectful Action Handler ---
-const handleAction = (
-  action: Action,
-  model: Model,
-  propose: (a: Action) => void,
-): Effect.Effect<
-  void,
-  never,
-  RpcAuthClient | RpcLogClient | LocationService
-> => {
-  if (action.type === "RESET_START") {
-    const { newPassword, confirmPassword } = model;
-    const { token } = action.payload;
+@customElement("reset-password-page")
+export class ResetPasswordPage extends LitElement {
+  @property({ type: String })
+  token = "";
 
-    // ✅ 5. Define the core logic effect which can fail with our typed errors.
-    const resetEffect: Effect.Effect<void, ResetPasswordError, RpcAuthClient> =
-      Effect.gen(function* () {
-        // Client-side validation first
-        if (newPassword.length < 8) {
-          return yield* Effect.fail(new PasswordTooShortError());
-        }
-        if (newPassword !== confirmPassword) {
-          return yield* Effect.fail(new PasswordsDoNotMatchError());
-        }
+  private ctrl = new SamController<this, Model, Action>(
+    this,
+    {
+      newPassword: "",
+      confirmPassword: "",
+      error: null,
+      isLoading: false,
+      isSuccess: false,
+    },
+    update,
+  );
 
-        const rpcClient = yield* RpcAuthClient;
-        // Map the backend's AuthError to our specific, typed client errors
-        return yield* rpcClient.resetPassword({ token, newPassword }).pipe(
+  private _handleSubmit = async (e: Event) => {
+    e.preventDefault();
+
+    this.ctrl.propose({ type: "RESET_START" });
+    await this.updateComplete;
+
+    const { newPassword, confirmPassword } = this.ctrl.model;
+    // ✅ FIX: Capture `this` in a local constant before entering the Effect.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const component = this;
+
+    const resetEffect = Effect.gen(function* () {
+      if (newPassword.length < 8) {
+        return yield* Effect.fail(new PasswordTooShortError());
+      }
+      if (newPassword !== confirmPassword) {
+        return yield* Effect.fail(new PasswordsDoNotMatchError());
+      }
+      const rpcClient = yield* RpcAuthClient;
+      // Use the captured constant `component` instead of `this`.
+      return yield* rpcClient
+        .resetPassword({ token: component.token, newPassword })
+        .pipe(
           Effect.catchAll((error) =>
             Schema.decodeUnknown(AuthError)(error).pipe(
               Effect.matchEffect({
@@ -101,48 +109,28 @@ const handleAction = (
             ),
           ),
         );
-      });
+    });
 
-    // ✅ 6. Execute the logic and handle the success/failure at the edge.
-    return resetEffect.pipe(
-      Effect.matchEffect({
-        onSuccess: () => Effect.sync(() => propose({ type: "RESET_SUCCESS" })),
-        onFailure: (
-          error, // `error` is our typed ResetPasswordError
-        ) =>
-          Effect.sync(() => propose({ type: "RESET_ERROR", payload: error })),
-      }),
-    );
-  } else if (action.type === "RESET_SUCCESS") {
-    return pipe(
-      Effect.sleep("2 seconds"),
-      Effect.andThen(navigate("/login")),
-      Effect.catchAllCause((cause) =>
-        Effect.logError("Navigation failed after password reset", cause),
-      ),
-    );
-  }
+    const result = await runClientPromise(Effect.either(resetEffect));
 
-  return Effect.void;
-};
-
-@customElement("reset-password-page")
-export class ResetPasswordPage extends LitElement {
-  @property({ type: String })
-  token = "";
-
-  private ctrl = new SamController<this, Model, Action, never>(
-    this,
-    {
-      newPassword: "",
-      confirmPassword: "",
-      error: null,
-      isLoading: false,
-      isSuccess: false,
-    },
-    update,
-    handleAction,
-  );
+    Either.match(result, {
+      onLeft: (error) =>
+        this.ctrl.propose({ type: "RESET_ERROR", payload: error }),
+      onRight: () => {
+        this.ctrl.propose({ type: "RESET_SUCCESS" });
+        // Handle side-effect
+        runClientUnscoped(
+          pipe(
+            Effect.sleep("2 seconds"),
+            Effect.andThen(navigate("/login")),
+            Effect.catchAllCause((cause) =>
+              Effect.logError("Navigation failed after password reset", cause),
+            ),
+          ),
+        );
+      },
+    });
+  };
 
   override render(): TemplateResult {
     const model = this.ctrl.model;
@@ -160,7 +148,6 @@ export class ResetPasswordPage extends LitElement {
       `;
     }
 
-    // ✅ 7. Map the typed error from the model to a user-friendly message
     const getErrorMessage = (
       error: ResetPasswordError | null,
     ): string | null => {
@@ -182,15 +169,7 @@ export class ResetPasswordPage extends LitElement {
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
           <h2 class=${styles.title}>Choose a New Password</h2>
-          <form
-            @submit=${(e: Event) => {
-              e.preventDefault();
-              this.ctrl.propose({
-                type: "RESET_START",
-                payload: { token: this.token },
-              });
-            }}
-          >
+          <form @submit=${this._handleSubmit}>
             <div class="space-y-4">
               ${NotionInput({
                 id: "newPassword",

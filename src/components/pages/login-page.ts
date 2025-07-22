@@ -1,19 +1,17 @@
-// src/components/pages/login-page.ts
+// FILE: src/components/pages/login-page.ts
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import { customElement } from "lit/decorators.js";
-import { runClientUnscoped } from "../../lib/client/runtime";
-import { Effect, Schema } from "effect";
+import { runClientPromise, runClientUnscoped } from "../../lib/client/runtime";
+import { Effect, Schema, Either } from "effect";
 import { navigate } from "../../lib/client/router";
 import { proposeAuthAction } from "../../lib/client/stores/authStore";
-import { RpcAuthClient, RpcLogClient } from "../../lib/client/rpc";
+import { RpcAuthClient } from "../../lib/client/rpc";
 import { AuthError } from "../../lib/shared/api";
 import { NotionButton } from "../ui/notion-button";
 import { NotionInput } from "../ui/notion-input";
 import type { PublicUser } from "../../lib/shared/schemas";
 import styles from "./LoginPage.module.css";
-import { clientLog } from "../../lib/client/clientLog";
 import { SamController } from "../../lib/client/sam-controller";
-// ✅ 1. Import our new typed errors
 import {
   LoginInvalidCredentialsError,
   LoginEmailNotVerifiedError,
@@ -21,26 +19,23 @@ import {
   type LoginError,
 } from "../../lib/client/errors";
 
-// --- Model ---
+// Model and Action types remain the same...
 interface Model {
   email: string;
   password: string;
-  // ✅ 2. The error is now a typed object, not a generic string
   error: LoginError | null;
   isLoading: boolean;
 }
 
-// --- Actions ---
 type Action =
   | { type: "UPDATE_EMAIL"; payload: string }
   | { type: "UPDATE_PASSWORD"; payload: string }
   | { type: "LOGIN_START" }
   | { type: "LOGIN_SUCCESS"; payload: { user: PublicUser; sessionId: string } }
-  // ✅ 3. The error payload is now a typed error object
   | { type: "LOGIN_ERROR"; payload: LoginError };
 
-// --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
+  // ... update function remains the same
   switch (action.type) {
     case "UPDATE_EMAIL":
       return { ...model, email: action.payload, error: null };
@@ -51,93 +46,73 @@ const update = (model: Model, action: Action): Model => {
     case "LOGIN_SUCCESS":
       return { ...model, isLoading: false };
     case "LOGIN_ERROR":
-      // ✅ 4. Store the actual error object in the model
       return { ...model, isLoading: false, error: action.payload };
   }
 };
 
-// --- Action Handler ---
-const handleAction = (
-  action: Action,
-  model: Model,
-  propose: (a: Action) => void,
-): Effect.Effect<void, never, RpcAuthClient | RpcLogClient> => {
-  if (action.type === "LOGIN_START") {
-    const { email, password } = model;
-
-    // ✅ 5. Define an effect for the core logic that can FAIL with our typed error.
-    const loginEffect: Effect.Effect<
-      { user: PublicUser; sessionId: string },
-      LoginError, // <-- This is the key change
-      RpcAuthClient | RpcLogClient
-    > = Effect.gen(function* () {
-      const rpcClient = yield* RpcAuthClient;
-      // The RPC call can fail. We catch the raw error and map it to our specific, typed UI errors.
-      return yield* rpcClient.login({ email, password }).pipe(
-        Effect.catchAll((error) =>
-          Schema.decodeUnknown(AuthError)(error).pipe(
-            Effect.matchEffect({
-              onSuccess: (authError) => {
-                const specificError: LoginError =
-                  authError._tag === "Unauthorized"
-                    ? new LoginInvalidCredentialsError()
-                    : authError._tag === "Forbidden"
-                      ? new LoginEmailNotVerifiedError()
-                      : new UnknownAuthError({ cause: authError });
-                return Effect.fail(specificError);
-              },
-              onFailure: (parseError) =>
-                Effect.fail(new UnknownAuthError({ cause: parseError })),
-            }),
-          ),
-        ),
-      );
-    });
-
-    // ✅ 6. Execute the logic effect and handle success or failure at the edge.
-    // This separates the "what to do" (loginEffect) from the "how to present it" (matchEffect).
-    return loginEffect.pipe(
-      Effect.matchEffect({
-        onSuccess: (result) =>
-          Effect.sync(() =>
-            propose({ type: "LOGIN_SUCCESS", payload: result }),
-          ),
-        onFailure: (error) =>
-          clientLog("info", "[login-page] Mapped domain error to UI action:", {
-            errorTag: error._tag,
-          }).pipe(
-            Effect.andThen(
-              Effect.sync(() =>
-                propose({ type: "LOGIN_ERROR", payload: error }),
-              ),
-            ),
-          ),
-      }),
-    );
-  } else if (action.type === "LOGIN_SUCCESS") {
-    const { user, sessionId } = action.payload;
-    const expires = new Date();
-    expires.setDate(expires.getDate() + 30);
-    document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
-    proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
-  }
-
-  return Effect.void;
-};
-
 @customElement("login-page")
 export class LoginPage extends LitElement {
-  private ctrl = new SamController<this, Model, Action, never>(
+  // ✅ FIX: Instantiate the controller with the correct 3 type arguments.
+  private ctrl = new SamController<this, Model, Action>(
     this,
     { email: "", password: "", error: null, isLoading: false },
     update,
-    handleAction,
   );
 
+  // The main async orchestration logic lives here
+  private _handleSubmit = async (e: Event) => {
+    e.preventDefault();
+
+    // 1. Propose the initial state change and wait for the UI to update
+    this.ctrl.propose({ type: "LOGIN_START" });
+    await this.updateComplete;
+
+    const { email, password } = this.ctrl.model;
+
+    // 2. Define the core async logic as an Effect
+    const loginEffect = RpcAuthClient.pipe(
+      Effect.flatMap((rpc) => rpc.login({ email, password })),
+      Effect.catchAll((error) =>
+        Schema.decodeUnknown(AuthError)(error).pipe(
+          Effect.matchEffect({
+            onSuccess: (authError) => {
+              const specificError: LoginError =
+                authError._tag === "Unauthorized"
+                  ? new LoginInvalidCredentialsError()
+                  : authError._tag === "Forbidden"
+                    ? new LoginEmailNotVerifiedError()
+                    : new UnknownAuthError({ cause: authError });
+              return Effect.fail(specificError);
+            },
+            onFailure: (parseError) =>
+              Effect.fail(new UnknownAuthError({ cause: parseError })),
+          }),
+        ),
+      ),
+    );
+
+    // 3. Run the effect and get the result
+    const result = await runClientPromise(Effect.either(loginEffect));
+
+    // 4. Propose the final state change based on the result
+    Either.match(result, {
+      onLeft: (error) =>
+        this.ctrl.propose({ type: "LOGIN_ERROR", payload: error }),
+      onRight: (successPayload) => {
+        this.ctrl.propose({ type: "LOGIN_SUCCESS", payload: successPayload });
+        // Handle post-success side-effects
+        const { user, sessionId } = successPayload;
+        const expires = new Date();
+        expires.setDate(expires.getDate() + 30);
+        document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+        proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
+      },
+    });
+  };
+
+  // The render method remains largely the same
   override render(): TemplateResult {
     const model = this.ctrl.model;
-
-    // ✅ 7. The render logic can now be smarter if needed, but for now, we map the error to a message.
     const getErrorMessage = (error: LoginError | null): string | null => {
       if (!error) return null;
       switch (error._tag) {
@@ -155,13 +130,7 @@ export class LoginPage extends LitElement {
       <div class=${styles.container}>
         <div class=${styles.formWrapper}>
           <h2 class=${styles.title}>Login</h2>
-          <form
-            @submit=${(e: Event) => {
-              e.preventDefault();
-              this.ctrl.propose({ type: "LOGIN_START" });
-            }}
-          >
-            <!-- ... form inputs ... -->
+          <form @submit=${this._handleSubmit}>
             ${NotionInput({
               id: "email",
               label: "Email",
@@ -186,11 +155,9 @@ export class LoginPage extends LitElement {
                 }),
               required: true,
             })}
-            <!-- ... -->
             ${errorMessage
               ? html`<div class=${styles.errorText}>${errorMessage}</div>`
               : nothing}
-
             <div class="mt-6">
               ${NotionButton({
                 children: model.isLoading ? "Logging in..." : "Login",
@@ -199,8 +166,6 @@ export class LoginPage extends LitElement {
               })}
             </div>
           </form>
-
-          <!-- ... other links ... -->
           <div class="mt-4 text-center text-sm">
             <a
               href="/forgot-password"

@@ -31,13 +31,16 @@ type AuthAction =
   | { type: "LOGOUT_START" }
   | { type: "LOGOUT_SUCCESS" }
   | { type: "SET_AUTHENTICATED"; payload: PublicUser };
+
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
+
 export const proposeAuthAction = (action: AuthAction): void => {
   runClientUnscoped(
     clientLog("info", `[authStore] Proposing action: ${action.type}`),
   );
   runClientUnscoped(Queue.offer(_actionQueue, action));
 };
+
 const update = (model: AuthModel, action: AuthAction): AuthModel => {
   switch (action.type) {
     case "AUTH_CHECK_START":
@@ -104,10 +107,6 @@ const handleAuthAction = (
           "[authStore] LOGOUT_SUCCESS action handler started.",
         );
 
-        // --- START OF FIX ---
-
-        // This effect is now much simpler. It no longer needs to know
-        // about Replicache's database.
         const logoutCleanup = Effect.gen(function* () {
           yield* clientLog("info", "--> [logoutCleanup] Starting.");
 
@@ -115,10 +114,7 @@ const handleAuthAction = (
           document.cookie =
             "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 
-          // 2. Update the application's auth state. This is the critical step
-          //    that will trigger the `runtimeManager` in lifecycle.ts to call
-          //    `deactivateReplicacheRuntime`, which in turn executes the
-          //    correct cleanup logic (including IndexedDB deletion).
+          // 2. Update the application's auth state.
           authState.value = update(authState.value, action);
           yield* clientLog(
             "info",
@@ -134,11 +130,8 @@ const handleAuthAction = (
           ),
         );
 
-        // Fork this simplified cleanup logic.
         yield* Effect.forkDaemon(logoutCleanup);
         break;
-
-        // --- END OF FIX ---
       }
     }
   });
@@ -157,8 +150,12 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
   ),
 );
 
-// The authProcess can now run safely on the base runtime as it doesn't
-// manage scopes itself.
-Runtime.runFork(AppRuntime)(authProcess);
+/**
+ * Starts the auth store's background process.
+ * This should be called once when the application initializes.
+ */
 
-proposeAuthAction({ type: "AUTH_CHECK_START" });
+export const initializeAuthStore = (): void => {
+  Runtime.runFork(AppRuntime)(authProcess);
+  // REMOVED: proposeAuthAction({ type: "AUTH_CHECK_START" });
+};

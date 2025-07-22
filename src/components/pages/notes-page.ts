@@ -12,7 +12,7 @@ import styles from "./NotesView.module.css";
 import { NoteSchema, type Note, type NoteId } from "../../lib/shared/schemas";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import { v4 as uuidv4 } from "uuid";
-import { SamController } from "../../lib/client/sam-controller";
+import { ReactiveSamController } from "../../lib/client/reactive-sam-controller";
 import type { LocationService } from "../../lib/client/LocationService";
 import type { ReadonlyJSONValue } from "replicache";
 import {
@@ -116,7 +116,7 @@ const handleAction = (
 };
 @customElement("notes-page")
 export class NotesPage extends LitElement {
-  private ctrl = new SamController<this, Model, Action, NotesPageError>(
+  private ctrl = new ReactiveSamController<this, Model, Action, NotesPageError>(
     this,
     { notes: [], isCreating: false, error: null },
     update,
