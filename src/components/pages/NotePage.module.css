@@ -26,35 +26,35 @@
   @apply p-8 text-center text-red-500;
 }
 
-/* ✅ THIS IS THE NEW PART FOR BULLET POINTS ✅ */
+/* ✅ THIS IS THE FIX ✅ */
 
-/* Target any blockNode that is a list item and make space for the bullet */
-.editor div[data-list-type="bullet"] {
+/* Target the <p> inside a list item to make space for the bullet */
+.editor div[data-list-type="bullet"] > p {
   @apply relative pl-6;
 }
 
-/* Base style for all bullets */
-.editor div[data-list-type="bullet"]::before {
+/* Base style for all bullets, now on the <p> */
+.editor div[data-list-type="bullet"] > p::before {
   @apply absolute left-0;
 }
 
 /* Style for top-level bullets (solid circle) */
-.editor div[data-list-type="bullet"][data-depth="0"]::before {
+.editor div[data-list-type="bullet"][data-depth="0"] > p::before {
   content: "•";
 }
 
 /* Style for second-level bullets (empty circle) */
-.editor div[data-list-type="bullet"][data-depth="1"]::before {
+.editor div[data-list-type="bullet"][data-depth="1"] > p::before {
   content: "◦";
 }
 
 /* Style for third-level bullets (solid square) */
-.editor div[data-list-type="bullet"][data-depth="2"]::before {
+.editor div[data-list-type="bullet"][data-depth="2"] > p::before {
   content: "▪";
 }
 
 /* You can add more styles for deeper levels if you want */
-.editor div[data-list-type="bullet"][data-depth="3"]::before {
+.editor div[data-list-type="bullet"][data-depth="3"] > p::before {
   content: "–";
 }
 

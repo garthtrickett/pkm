@@ -40,15 +40,15 @@ const BlockNode = Node.create({
     return [
       new InputRule({
         find: /^\s*([-*])\s$/,
-        // This is the fix. By chaining `.focus()` at the end, we command
-        // the editor to re-evaluate the cursor's visual position *after*
-        // the DOM and CSS have been updated. This resolves the visual
-        // rendering race condition.
+        // This is the new fix. Instead of the general .focus(), we explicitly
+        // set the text selection to the start of the range that was just
+        // deleted. This is a more direct and reliable way to control the
+        // cursor position and avoid the rendering race condition.
         handler: ({ chain, range }) => {
           chain()
             .deleteRange(range)
             .updateAttributes("blockNode", { listType: "bullet" })
-            .focus() // <-- The crucial addition
+            .setTextSelection(range.from) // <-- The new, more explicit fix
             .run();
         },
       }),
