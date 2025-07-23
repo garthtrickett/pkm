@@ -1,9 +1,10 @@
 // src/features/note/note.sync.ts
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { Transaction } from "kysely";
 import type { Database } from "../../types";
 import type { SyncableEntity } from "../../lib/server/sync/sync.types";
 import type { UserId } from "../../lib/shared/schemas";
+import { TiptapDocSchema } from "../../lib/shared/schemas";
 import type { PullResponse } from "../../lib/shared/replicache-schemas";
 
 /**
@@ -37,8 +38,12 @@ export const noteSyncHandler: SyncableEntity = {
       );
 
       for (const note of changedNotes) {
-        // ✅ FIX: Construct the value object directly to match the client's expected schema.
-        // This includes the `_tag` and stringified dates.
+        // This is the fix. We encode the 'unknown' content into the specific
+        // TiptapDoc type that the client's schema expects.
+        const encodedContent = Schema.encodeSync(TiptapDocSchema)(
+          note.content as any,
+        );
+
         patch.push({
           op: "put",
           key: `note/${note.id}`,
@@ -47,7 +52,7 @@ export const noteSyncHandler: SyncableEntity = {
             id: note.id,
             user_id: note.user_id,
             title: note.title,
-            content: note.content,
+            content: encodedContent,
             version: note.version,
             created_at: note.created_at.toISOString(),
             updated_at: note.updated_at.toISOString(),

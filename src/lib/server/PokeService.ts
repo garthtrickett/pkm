@@ -24,7 +24,7 @@ const makePokeService = Effect.gen(function* () {
   // The 'poke' and 'subscribe' functions close over the single `userPubSubs` Ref.
   const poke = (userId: UserId) =>
     Effect.gen(function* () {
-      yield* Effect.logDebug({ userId }, "PokeService.poke() called.");
+      yield* Effect.logInfo({ userId }, "PokeService.poke() called.");
       const pubSubsMap = yield* Ref.get(userPubSubs);
       const userPubSub = pubSubsMap.get(userId);
       if (userPubSub) {
@@ -38,7 +38,7 @@ const makePokeService = Effect.gen(function* () {
         const pubSubsMap = yield* Ref.get(userPubSubs);
         let userPubSub = pubSubsMap.get(userId);
         if (!userPubSub) {
-          yield* Effect.logDebug(
+          yield* Effect.logInfo(
             { userId },
             "Creating new PubSub for user's first WebSocket connection.",
           );

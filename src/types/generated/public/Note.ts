@@ -15,7 +15,7 @@ export default interface NoteTable {
 
   title: ColumnType<string, string, string>;
 
-  content: ColumnType<string, string, string>;
+  content: ColumnType<unknown, unknown, unknown>;
 
   version: ColumnType<number, number | undefined, number>;
 

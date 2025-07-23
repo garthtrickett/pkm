@@ -26,6 +26,11 @@ class PushTransactionError extends Data.TaggedError("PushTransactionError")<{
 // --- Mutation Logic (Now a simple dispatcher) ---
 const applyMutation = (mutation: PushRequest["mutations"][number]) =>
   Effect.gen(function* () {
+    // LOGGING: Log which mutation is about to be applied
+    yield* Effect.logInfo(`[push] Applying mutation: ${mutation.name}`, {
+      mutationId: mutation.id,
+      clientId: mutation.clientID,
+    });
     switch (mutation.name) {
       case "createNote": {
         const args = yield* Schema.decodeUnknown(CreateNoteArgsSchema)(
@@ -53,11 +58,6 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
     }
   });
 
-/**
- * An Effect that encapsulates the logic for processing a batch of mutations.
- * It expects the `Db` service in its context to be a Kysely transaction object.
- * This function is pure and describes the transaction's steps without executing them.
- */
 const processMutations = (
   mutations: PushRequest["mutations"],
   clientGroupID: PushRequest["clientGroupID"],
@@ -70,7 +70,10 @@ const processMutations = (
         const trx = yield* _(Db); // Expects a transaction to be provided as the Db service
         const { clientID, id: mutationID } = mutation;
 
-        // Get or create client state
+        yield* Effect.logInfo(
+          `[push] Processing mutation #${mutationID} for client ${clientID}`,
+        );
+
         let clientState = yield* _(
           Effect.promise(() =>
             trx
@@ -82,7 +85,15 @@ const processMutations = (
           ),
         );
 
+        const lastMutationID = clientState?.last_mutation_id ?? 0;
+        yield* Effect.logInfo(
+          `[push] Client ${clientID} lastMutationID is ${lastMutationID}. Current mutationID is ${mutationID}.`,
+        );
+
         if (!clientState) {
+          yield* Effect.logInfo(
+            `[push] Client ${clientID} not found. Creating new entry.`,
+          );
           yield* _(
             Effect.promise(() =>
               trx
@@ -111,10 +122,16 @@ const processMutations = (
         const expectedMutationID = clientState.last_mutation_id + 1;
 
         if (mutationID < expectedMutationID) {
+          yield* Effect.logInfo(
+            `[push] Mutation ${mutationID} already processed. Skipping.`,
+          );
           return; // Already processed, continue
         }
 
         if (mutationID > expectedMutationID) {
+          yield* Effect.logError(
+            `[push] Mutation ${mutationID} out of order for client ${clientID}; expected ${expectedMutationID}. Failing transaction.`,
+          );
           return yield* _(
             Effect.fail(
               new Error(
@@ -124,14 +141,15 @@ const processMutations = (
           );
         }
 
-        // Apply the specific mutation logic
         yield* _(
           applyMutation(mutation).pipe(
-            Effect.provideService(Auth, Auth.of({ user, session: null })), // Correct
+            Effect.provideService(Auth, Auth.of({ user, session: null })),
           ),
         );
 
-        // Update the client's mutation ID
+        yield* Effect.logInfo(
+          `[push] Updating client ${clientID} last_mutation_id to ${mutationID}.`,
+        );
         yield* _(
           Effect.promise(() =>
             trx
@@ -145,11 +163,6 @@ const processMutations = (
     { concurrency: 1, discard: true }, // Process mutations sequentially
   );
 
-/**
- * Handles a Replicache push request by processing mutations within a database transaction.
- * This function orchestrates getting dependencies, defining the transactional logic,
- * executing it, and triggering a poke on success.
- */
 export const handlePush = (
   req: PushRequest,
 ): Effect.Effect<void, AuthError, Db | Auth | PokeService> =>
@@ -166,7 +179,7 @@ export const handlePush = (
     yield* _(
       Effect.logInfo(
         { clientGroupID, mutationCount: mutations.length },
-        "Processing V1 push request",
+        "[push] Processing V1 push request",
       ),
     );
 
@@ -188,12 +201,15 @@ export const handlePush = (
 
     yield* _(
       transactionEffect.pipe(
+        Effect.tap(() =>
+          Effect.logInfo(
+            `[push] Transaction for client group ${clientGroupID} successful.`,
+          ),
+        ),
         Effect.catchTag("PushTransactionError", (internalError) =>
-          // 1. Log the full, detailed error for debugging.
           Effect.logError("Push transaction failed with an error.", {
             error: internalError,
           }).pipe(
-            // 2. Map it to a generic, safe error to send to the client.
             Effect.andThen(
               Effect.fail(
                 new AuthError({

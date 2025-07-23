@@ -9,7 +9,15 @@ import { authState, type AuthModel } from "../../lib/client/stores/authStore";
 import { navigate } from "../../lib/client/router";
 import { NotionButton } from "../ui/notion-button";
 import styles from "./NotesView.module.css";
-import { NoteSchema, type Note, type NoteId } from "../../lib/shared/schemas";
+import {
+  NoteSchema,
+  type AppNote,
+  type NoteId,
+  type TiptapDoc,
+  // Import the specific node types for clarity
+  type TiptapParagraphNode,
+  type TiptapTextNode,
+} from "../../lib/shared/schemas";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import { v4 as uuidv4 } from "uuid";
 import { ReactiveSamController } from "../../lib/client/reactive-sam-controller";
@@ -21,10 +29,31 @@ import {
   type NotesPageError,
 } from "../../lib/client/errors";
 
+// Utility to get plain text from a Tiptap document
+const getTextFromTiptapDoc = (doc: TiptapDoc): string => {
+  if (!doc || !Array.isArray(doc.content)) {
+    return "";
+  }
+  // Iterate through nodes and concatenate text content
+  return doc.content
+    .map(
+      (block) =>
+        block.content
+          // Add explicit types for 'p' and 't'
+          ?.map(
+            (p: TiptapParagraphNode) =>
+              p.content?.map((t: TiptapTextNode) => t.text).join("") || "",
+          )
+          .join("\n") || "",
+    )
+    .join("\n")
+    .trim();
+};
+
 // --- Model ---
 type Status = "loading" | "idle" | "error";
 interface Model {
-  notes: Note[];
+  notes: AppNote[];
   isCreating: boolean;
   error: NotesPageError | null;
   status: Status;
@@ -33,7 +62,7 @@ interface Model {
 // --- Actions ---
 type Action =
   | { type: "INITIALIZE_START" }
-  | { type: "NOTES_UPDATED"; payload: Note[] }
+  | { type: "NOTES_UPDATED"; payload: AppNote[] }
   | { type: "INITIALIZE_ERROR"; payload: NotesPageError }
   | { type: "CREATE_NOTE_START" }
   | { type: "CREATE_NOTE_COMPLETE" }
@@ -167,7 +196,7 @@ export class NotesPage extends LitElement {
             return noteJSONs;
           },
           (noteJSONs: ReadonlyJSONValue[]) => {
-            const notes: Note[] = noteJSONs.flatMap((json) => {
+            const notes: AppNote[] = noteJSONs.flatMap((json) => {
               const option = Schema.decodeUnknownOption(NoteSchema)(json);
               return Option.isSome(option) ? [option.value] : [];
             });
@@ -279,52 +308,57 @@ export class NotesPage extends LitElement {
             ? repeat(
                 notes,
                 (note) => note.id,
-                (note) => html`
-                  <div class="group relative">
-                    <a
-                      href="/notes/${note.id}"
-                      class=${styles.noteItem}
-                      @click=${(e: Event) => {
-                        e.preventDefault();
-                        runClientUnscoped(navigate(`/notes/${note.id}`));
-                      }}
-                    >
-                      <h3 class=${styles.noteItemH3}>${note.title}</h3>
-                      <p class=${styles.noteItemP}>
-                        ${note.content
-                          ? note.content.substring(0, 100) +
-                            (note.content.length > 100 ? "..." : "")
-                          : "No additional content"}
-                      </p>
-                    </a>
-                    <button
-                      @click=${() =>
-                        this.ctrl.propose({
-                          type: "DELETE_NOTE",
-                          payload: note.id,
-                        })}
-                      class="absolute top-3 right-3 z-10 hidden rounded-full bg-white p-1.5 text-zinc-500 shadow-sm transition-all group-hover:block hover:bg-red-50 hover:text-red-600"
-                      aria-label="Delete note"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
+                (note) => {
+                  const contentPreview = getTextFromTiptapDoc(
+                    note.content,
+                  );
+                  return html`
+                    <div class="group relative">
+                      <a
+                        href="/notes/${note.id}"
+                        class=${styles.noteItem}
+                        @click=${(e: Event) => {
+                          e.preventDefault();
+                          runClientUnscoped(navigate(`/notes/${note.id}`));
+                        }}
                       >
-                        <path d="M3 6h18" />
-                        <path
-                          d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                `,
+                        <h3 class=${styles.noteItemH3}>${note.title}</h3>
+                        <p class=${styles.noteItemP}>
+                          ${contentPreview
+                            ? contentPreview.substring(0, 100) +
+                              (contentPreview.length > 100 ? "..." : "")
+                            : "No additional content"}
+                        </p>
+                      </a>
+                      <button
+                        @click=${() =>
+                          this.ctrl.propose({
+                            type: "DELETE_NOTE",
+                            payload: note.id,
+                          })}
+                        class="absolute top-3 right-3 z-10 hidden rounded-full bg-white p-1.5 text-zinc-500 shadow-sm transition-all group-hover:block hover:bg-red-50 hover:text-red-600"
+                        aria-label="Delete note"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M3 6h18" />
+                          <path
+                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  `;
+                },
               )
             : html`
                 <div class=${styles.emptyState}>

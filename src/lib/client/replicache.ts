@@ -8,8 +8,14 @@ import {
   type PullRequest,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
-import type { PublicUser, Note, NoteId, UserId } from "../shared/schemas";
-import { NoteSchema } from "../shared/schemas";
+import type {
+  PublicUser,
+  NoteId,
+  UserId,
+  TiptapDoc,
+  AppNote,
+} from "../shared/schemas";
+import { NoteSchema, TiptapDocSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import {
   runClientPromise,
@@ -37,39 +43,62 @@ const mutators = {
     args: { id: NoteId; userID: UserId; title: string },
   ): Promise<ReadonlyJSONValue> => {
     const now = new Date();
-    const newNote: Note = {
+    // Create an empty Tiptap document as the default content
+    const emptyContent: TiptapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "blockNode",
+          attrs: { depth: 0 },
+          content: [{ type: "paragraph" }],
+        },
+      ],
+    };
+
+    const newNote = {
       id: args.id,
       user_id: args.userID,
       title: args.title,
-      content: "",
+      content: emptyContent,
       version: 1,
       created_at: now,
       updated_at: now,
     };
+
+    // This is the fix. Replicache needs a plain JSON object.
     const jsonCompatibleNote = {
       ...newNote,
+      content: Schema.encodeSync(TiptapDocSchema)(newNote.content),
       created_at: newNote.created_at.toISOString(),
       updated_at: newNote.updated_at.toISOString(),
     };
+
     await tx.set(`note/${newNote.id}`, jsonCompatibleNote);
     return jsonCompatibleNote;
   },
   updateNote: async (
     tx: WriteTransaction,
-    args: { id: NoteId; title: string; content: string },
+    args: { id: NoteId; title: string; content: TiptapDoc },
   ) => {
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
+    if (!noteJSON) return; // Note might have been deleted
+
+    // Decode from the DB format (with unknown content) to our application type
     const note = Schema.decodeUnknownSync(NoteSchema)(noteJSON);
-    const updatedNote: Note = {
+
+    const updatedNote: AppNote = {
       ...note,
       title: args.title,
       content: args.content,
       version: note.version + 1,
       updated_at: new Date(),
     };
+
+    // Encode back to a plain JSON object for storage
     const jsonCompatibleUpdate = {
       ...updatedNote,
+      content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content),
       created_at: updatedNote.created_at.toISOString(),
       updated_at: updatedNote.updated_at.toISOString(),
     };

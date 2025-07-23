@@ -1,6 +1,12 @@
 // FILE: ./src/lib/shared/replicache-schemas.ts
 import { Schema } from "effect";
-import { NoteIdSchema, UserIdSchema, BlockIdSchema } from "./schemas";
+// Import the Tiptap schema
+import {
+  NoteIdSchema,
+  UserIdSchema,
+  BlockIdSchema,
+  TiptapDocSchema,
+} from "./schemas";
 
 // --- PULL ---
 export const PullRequestSchema = Schema.Struct({
@@ -14,7 +20,7 @@ const SerializedNoteSchema = Schema.Struct({
   id: NoteIdSchema,
   user_id: UserIdSchema,
   title: Schema.String,
-  content: Schema.String,
+  content: TiptapDocSchema,
   version: Schema.Number,
   created_at: Schema.String,
   updated_at: Schema.String,

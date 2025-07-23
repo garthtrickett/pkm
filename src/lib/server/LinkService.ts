@@ -29,10 +29,28 @@ export const LinkServiceLive = Layer.succeed(
     updateLinksForNote: (noteId, userId) =>
       Effect.gen(function* () {
         const db = yield* Db; // This 'db' is already a transaction
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           `[LinkService] Starting update for noteId: ${noteId}`,
         );
 
+        // 1. Delete all existing links originating from this note.
+        // This is robust and handles cases where blocks are removed.
+        yield* Effect.tryPromise({
+          try: () =>
+            db
+              .deleteFrom("link")
+              .where("source_block_id", "in", (eb) =>
+                eb
+                  .selectFrom("block")
+                  .select("block.id") // Be explicit
+                  .where("note_id", "=", noteId),
+              )
+              .execute(),
+          catch: (cause) => new LinkServiceError({ cause }),
+        });
+        yield* Effect.logInfo(`[LinkService] Cleared old links for note.`);
+
+        // 2. Fetch current blocks to parse for new links.
         const blocks = yield* Effect.tryPromise({
           try: () =>
             db
@@ -43,13 +61,12 @@ export const LinkServiceLive = Layer.succeed(
               .execute(),
           catch: (cause) => new LinkServiceError({ cause }),
         });
-        yield* Effect.logDebug(
-          `[LinkService] Found ${blocks.length} blocks for note.`,
+        yield* Effect.logInfo(
+          `[LinkService] Found ${blocks.length} blocks to parse for new links.`,
         );
 
-        const blockIds = blocks.map((b) => b.id);
-        if (blockIds.length === 0) {
-          return;
+        if (blocks.length === 0) {
+          return; // No blocks, so no new links to create.
         }
 
         const uniqueLinkTitles = new Set<string>();
@@ -61,27 +78,15 @@ export const LinkServiceLive = Layer.succeed(
             }
           }
         }
-        yield* Effect.logDebug(
-          `[LinkService] Found ${uniqueLinkTitles.size} unique link titles to resolve.`,
-        );
-
-        // --- START OF FIX: Remove nested transaction ---
-
-        // Delete old links directly on the transaction
-        yield* Effect.tryPromise({
-          try: () =>
-            db
-              .deleteFrom("link")
-              .where("source_block_id", "in", blockIds)
-              .execute(),
-          catch: (cause) => new LinkServiceError({ cause }),
-        });
-        yield* Effect.logDebug(`[LinkService] Deleted old links.`);
 
         if (uniqueLinkTitles.size === 0) {
-          yield* Effect.logDebug(`[LinkService] No new links to add.`);
+          yield* Effect.logInfo(`[LinkService] No new links to add.`);
           return;
         }
+
+        yield* Effect.logInfo(
+          `[LinkService] Found ${uniqueLinkTitles.size} unique link titles to resolve.`,
+        );
 
         const resolvedNotes = yield* Effect.tryPromise({
           try: () =>
@@ -93,12 +98,11 @@ export const LinkServiceLive = Layer.succeed(
               .execute(),
           catch: (cause) => new LinkServiceError({ cause }),
         });
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           `[LinkService] Resolved ${resolvedNotes.length} notes from titles.`,
         );
 
         const titleToIdMap = new Map(resolvedNotes.map((n) => [n.title, n.id]));
-
         const newLinks: NewLink[] = [];
         for (const block of blocks) {
           const matches = [...block.content.matchAll(WIKI_LINK_REGEX)];
@@ -120,12 +124,10 @@ export const LinkServiceLive = Layer.succeed(
             try: () => db.insertInto("link").values(newLinks).execute(),
             catch: (cause) => new LinkServiceError({ cause }),
           });
-          yield* Effect.logDebug(
+          yield* Effect.logInfo(
             `[LinkService] Inserted ${newLinks.length} new links.`,
           );
         }
-
-        // --- END OF FIX ---
 
         yield* Effect.logInfo(
           `[LinkService] Finished link update for note ${noteId}.`,

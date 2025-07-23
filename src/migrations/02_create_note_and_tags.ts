@@ -14,7 +14,7 @@ export async function up(db: Kysely<Database>) {
       c.notNull().references("user.id").onDelete("cascade"),
     )
     .addColumn("title", "text", (c) => c.notNull())
-    .addColumn("content", "text", (c) => c.notNull())
+    .addColumn("content", "jsonb", (c) => c.notNull()) // [!code focus]
     .addColumn("version", "integer", (c) => c.notNull().defaultTo(1))
     .addColumn("created_at", "timestamp", (c) =>
       c.notNull().defaultTo(db.fn("now")),
@@ -23,7 +23,6 @@ export async function up(db: Kysely<Database>) {
       c.notNull().defaultTo(db.fn("now")),
     )
     .execute();
-
   // Tag Table
   await db.schema
     .createTable("tag")

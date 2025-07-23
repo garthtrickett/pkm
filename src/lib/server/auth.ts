@@ -30,7 +30,7 @@ export const AuthMiddlewareLive = Layer.effect(
     return ({ clientId, rpc }) => {
       const logic = Effect.gen(function* () {
         const rpcTag = rpc._tag;
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           { clientId, rpc: rpcTag },
           "AuthMiddleware triggered",
         );
@@ -44,7 +44,7 @@ export const AuthMiddlewareLive = Layer.effect(
           string
         >;
 
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           {
             clientId,
             rpc: rpcTag,
@@ -55,7 +55,7 @@ export const AuthMiddlewareLive = Layer.effect(
 
         const sessionIdOption = getSessionIdFromRequest({ headers });
 
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           {
             clientId,
             rpc: rpcTag,
@@ -75,7 +75,7 @@ export const AuthMiddlewareLive = Layer.effect(
           );
         }
 
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           { sessionId: sessionIdOption.value },
           "[AuthMiddleware] Session ID found, proceeding to validation.",
         );
@@ -115,15 +115,15 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
     const request = yield* HttpServerRequest.HttpServerRequest;
 
     // ✅ FIX: Use a type assertion to safely handle the 'any' from JSON.parse
-    const allHeaders = JSON.parse(JSON.stringify(request.headers)) as Record<
-      string,
-      string
-    >;
+    // const allHeaders = JSON.parse(JSON.stringify(request.headers)) as Record<
+    //   string,
+    //   string
+    // >;
 
-    yield* Effect.logDebug(
-      { url: request.url, headers: allHeaders },
-      "[httpAuthMiddleware] Triggered for HTTP request",
-    );
+    // yield* Effect.logDebug(
+    //   { url: request.url, headers: allHeaders },
+    //   "[httpAuthMiddleware] Triggered for HTTP request",
+    // );
 
     const sessionIdOption = getSessionIdFromRequest({
       headers: request.headers,

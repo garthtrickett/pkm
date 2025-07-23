@@ -29,10 +29,31 @@ export const TaskServiceLive = Layer.succeed(
     syncTasksForNote: (noteId, userId) =>
       Effect.gen(function* () {
         const db = yield* Db; // This 'db' is already a transaction
-        yield* Effect.logDebug(
+        yield* Effect.logInfo(
           `[TaskService] Starting sync for noteId: ${noteId}`,
         );
 
+        // --- START OF FIX ---
+        // 1. Atomically delete all tasks associated with this note.
+        // This is safer than fetching IDs first, especially if blocks are deleted.
+        // The subquery correctly handles cases where there are no blocks.
+        yield* Effect.tryPromise({
+          try: () =>
+            db
+              .deleteFrom("task")
+              .where("source_block_id", "in", (eb) =>
+                eb
+                  .selectFrom("block")
+                  .select("block.id") // Be explicit about the table
+                  .where("note_id", "=", noteId),
+              )
+              .execute(),
+          catch: (cause) => new TaskServiceError({ cause }),
+        });
+        yield* Effect.logInfo(`[TaskService] Cleared old tasks for note.`);
+        // --- END OF FIX ---
+
+        // 2. Fetch the current blocks to generate new tasks.
         const blocks = yield* Effect.tryPromise({
           try: () =>
             db
@@ -43,27 +64,12 @@ export const TaskServiceLive = Layer.succeed(
               .execute(),
           catch: (cause) => new TaskServiceError({ cause }),
         });
-        yield* Effect.logDebug(
-          `[TaskService] Found ${blocks.length} blocks for note.`,
+        yield* Effect.logInfo(
+          `[TaskService] Found ${blocks.length} blocks to parse for new tasks.`,
         );
 
-        const blockIds = blocks.map((b) => b.id);
-
-        // --- START OF FIX: Remove nested transaction ---
-
-        // Delete all existing tasks sourced from this note's blocks
-        yield* Effect.tryPromise({
-          try: () =>
-            db
-              .deleteFrom("task")
-              .where("source_block_id", "in", blockIds)
-              .execute(),
-          catch: (cause) => new TaskServiceError({ cause }),
-        });
-        yield* Effect.logDebug(`[TaskService] Deleted old tasks.`);
-
         if (blocks.length === 0) {
-          return;
+          return; // Nothing more to do
         }
 
         const newTasks: NewTask[] = [];
@@ -83,17 +89,15 @@ export const TaskServiceLive = Layer.succeed(
         }
 
         if (newTasks.length > 0) {
-          // Then, insert the new tasks we just parsed.
+          // 3. Insert the new tasks we just parsed.
           yield* Effect.tryPromise({
             try: () => db.insertInto("task").values(newTasks).execute(),
             catch: (cause) => new TaskServiceError({ cause }),
           });
-          yield* Effect.logDebug(
+          yield* Effect.logInfo(
             `[TaskService] Inserted ${newTasks.length} new tasks.`,
           );
         }
-
-        // --- END OF FIX ---
 
         yield* Effect.logInfo(
           `[TaskService] Finished task sync for note ${noteId}.`,

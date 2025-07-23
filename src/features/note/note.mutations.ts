@@ -1,37 +1,72 @@
 // FILE: src/features/note/note.mutations.ts
 import { Effect, Schema, Layer } from "effect";
 import { sql } from "kysely";
+import { v4 as uuidv4 } from "uuid";
 import { Db } from "../../db/DbTag";
 import { Auth } from "../../lib/server/auth";
-import { NoteIdSchema, UserId, UserIdSchema } from "../../lib/shared/schemas";
+import {
+  NoteIdSchema,
+  UserId,
+  UserIdSchema,
+  type TiptapDoc,
+  TiptapDocSchema,
+} from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
 import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
-import type { NewBlock } from "../../types/generated/public/Block";
+import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
 
-// --- Placeholder for a future, more advanced parser ---
 const parseContentToBlocks = (
   noteId: NoteId,
   userId: UserId,
-  content: string,
+  contentJSON: TiptapDoc,
 ): NewBlock[] => {
-  return content.split("\n").map((line, index) => ({
-    note_id: noteId,
-    user_id: userId,
-    type: "text",
-    content: line,
-    fields: {},
-    tags: [],
-    links: [],
-    transclusions: [],
-    file_path: "",
-    depth: 0,
-    order: index,
-    version: 1,
-  }));
+  const tiptapBlocks = contentJSON.content || [];
+  const parsedBlocks: NewBlock[] = [];
+  const parentStack: (BlockId | null)[] = [null]; // stack to track parent IDs by depth
+  const orderCounters: Map<BlockId | "root", number> = new Map();
+
+  for (const blockNode of tiptapBlocks) {
+    if (blockNode.type !== "blockNode" || !blockNode.content) continue;
+
+    const newBlockId = uuidv4() as BlockId;
+    const depth = blockNode.attrs?.depth ?? 0;
+    const textContent =
+      blockNode.content
+        ?.map((p) => p.content?.map((t) => t.text).join("") || "")
+        .join("\n") || "";
+
+    // Determine parent and order
+    const parentId = depth > 0 ? parentStack[depth - 1] : null;
+    const parentKey = parentId || "root";
+    const order = orderCounters.get(parentKey) || 0;
+    orderCounters.set(parentKey, order + 1);
+
+    // Update parent stack
+    parentStack[depth] = newBlockId;
+    parentStack.length = depth + 1; // Prune deeper levels
+
+    parsedBlocks.push({
+      id: newBlockId,
+      note_id: noteId,
+      user_id: userId,
+      parent_id: parentId,
+      type: "text", // Default type for now
+      content: textContent,
+      depth,
+      order,
+      version: 1,
+      fields: {},
+      tags: [],
+      links: [],
+      transclusions: [],
+      file_path: "",
+    });
+  }
+
+  return parsedBlocks;
 };
-// ---
 
 // --- Mutation Argument Schemas ---
 export const CreateNoteArgsSchema = Schema.Struct({
@@ -44,7 +79,7 @@ export type CreateNoteArgs = Schema.Schema.Type<typeof CreateNoteArgsSchema>;
 export const UpdateNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
   title: Schema.String,
-  content: Schema.String,
+  content: TiptapDocSchema,
 });
 export type UpdateNoteArgs = Schema.Schema.Type<typeof UpdateNoteArgsSchema>;
 
@@ -66,7 +101,7 @@ export const handleCreateNote = (
     const newNote: NewNote = {
       id: args.id,
       title: args.title,
-      content: "",
+      content: { type: "doc", content: [] }, // Start with empty Tiptap content
       user_id: user!.id,
       version: 1,
       created_at: now,
@@ -82,7 +117,7 @@ export const handleUpdateNote = (
   args: UpdateNoteArgs,
 ): Effect.Effect<void, Error, Db | Auth> =>
   Effect.gen(function* () {
-    yield* Effect.logDebug(
+    yield* Effect.logInfo(
       `[handleUpdateNote] Starting update for noteId: ${args.id}`,
     );
     const db = yield* Db; // This 'db' object IS the transaction from push.ts
@@ -140,7 +175,7 @@ export const handleUpdateNote = (
 
     yield* updateAllEffect;
 
-    yield* Effect.logDebug(
+    yield* Effect.logInfo(
       `[handleUpdateNote] Finished update for noteId: ${args.id}`,
     );
   }).pipe(Effect.provide(Layer.merge(LinkServiceLive, TaskServiceLive)));
