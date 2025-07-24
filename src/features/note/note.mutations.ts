@@ -15,6 +15,7 @@ import {
   type TiptapTextNode,
   type TiptapBulletListNode,
   type TiptapListItemNode,
+  type TiptapHeadingNode, // Import the heading node type
 } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
@@ -22,10 +23,12 @@ import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
 import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
 
+// ✅ 1. ADDED: TiptapHeadingNode to the union type.
 type TraversableNode =
   | TiptapParagraphNode
   | TiptapBulletListNode
-  | TiptapListItemNode;
+  | TiptapListItemNode
+  | TiptapHeadingNode;
 
 const parseContentToBlocks = (
   noteId: NoteId,
@@ -44,11 +47,10 @@ const parseContentToBlocks = (
     let order = 0;
     for (const node of nodes) {
       if (node.type === "bulletList" && node.content) {
-        traverseNodes(node.content, parentId, depth);
+        traverseNodes(node.content as TraversableNode[], parentId, depth);
       } else if (node.type === "listItem" && node.content) {
         const newBlockId = uuidv4() as BlockId;
 
-        // ✅ FIX: Changed `listItem.content` to `node.content`
         const paragraphNode = node.content.find(
           (n: TiptapNode): n is TiptapParagraphNode => n.type === "paragraph",
         );
@@ -75,15 +77,18 @@ const parseContentToBlocks = (
           file_path: "",
         });
 
-        // ✅ FIX: Changed `listItem.content` to `node.content`
         const nestedList = node.content.find(
           (n: TiptapNode): n is TiptapBulletListNode => n.type === "bulletList",
         );
-
         if (nestedList && nestedList.content) {
-          traverseNodes(nestedList.content, newBlockId, depth + 1);
+          traverseNodes(
+            nestedList.content as TraversableNode[],
+            newBlockId,
+            depth + 1,
+          );
         }
-      } else if (node.type === "paragraph") {
+        // ✅ 2. MODIFIED: This block now handles both paragraphs and headings.
+      } else if (node.type === "paragraph" || node.type === "heading") {
         const textContent =
           node.content
             ?.map((t: TiptapTextNode) => t.text)
@@ -111,7 +116,7 @@ const parseContentToBlocks = (
     }
   };
 
-  traverseNodes(contentJSON.content, null, 0);
+  traverseNodes(contentJSON.content as TraversableNode[], null, 0);
   return parsedBlocks;
 };
 export const CreateNoteArgsSchema = Schema.Struct({

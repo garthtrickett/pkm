@@ -1,4 +1,4 @@
-// src/lib/shared/schemas.ts
+// FILE: ./src/lib/shared/schemas.ts
 import { Schema } from "effect";
 
 import type { NoteId, Note } from "../../types/generated/public/Note";
@@ -49,12 +49,24 @@ export type TiptapParagraphNode = Schema.Schema.Type<
   typeof TiptapParagraphNodeSchema
 >;
 
+// Add this new schema for heading nodes
+export const TiptapHeadingNodeSchema = Schema.Struct({
+  type: Schema.Literal("heading"),
+  attrs: Schema.Struct({ level: Schema.Number }),
+  content: Schema.optional(Schema.Array(TiptapTextNodeSchema)),
+});
+export type TiptapHeadingNode = Schema.Schema.Type<
+  typeof TiptapHeadingNodeSchema
+>;
+
 // --- Strengthened Recursive Schemas ---
 
 // 1. Forward-declare interfaces for recursive types to break circular dependencies.
 export interface TiptapListItemNode {
   readonly type: "listItem";
-  readonly content: ReadonlyArray<TiptapParagraphNode | TiptapBulletListNode>;
+  readonly content: ReadonlyArray<
+    TiptapParagraphNode | TiptapBulletListNode | TiptapHeadingNode // 👈 ADDED
+  >;
 }
 
 export interface TiptapBulletListNode {
@@ -68,7 +80,11 @@ const TiptapListItemNodeSchema: Schema.Schema<TiptapListItemNode> =
     Schema.Struct({
       type: Schema.Literal("listItem"),
       content: Schema.Array(
-        Schema.Union(TiptapParagraphNodeSchema, TiptapBulletListNodeSchema),
+        Schema.Union(
+          TiptapParagraphNodeSchema,
+          TiptapBulletListNodeSchema,
+          TiptapHeadingNodeSchema, // 👈 ADDED
+        ),
       ),
     }),
   );
@@ -86,7 +102,8 @@ export type TiptapNode =
   | TiptapParagraphNode
   | TiptapBulletListNode
   | TiptapListItemNode
-  | TiptapTextNode;
+  | TiptapTextNode
+  | TiptapHeadingNode;
 
 // --- End of Strengthened Schemas ---
 
@@ -95,7 +112,11 @@ export const TiptapDocSchema = Schema.Struct({
   type: Schema.Literal("doc"),
   content: Schema.optional(
     Schema.Array(
-      Schema.Union(TiptapParagraphNodeSchema, TiptapBulletListNodeSchema),
+      Schema.Union(
+        TiptapParagraphNodeSchema,
+        TiptapBulletListNodeSchema,
+        TiptapHeadingNodeSchema,
+      ),
     ),
   ),
 });

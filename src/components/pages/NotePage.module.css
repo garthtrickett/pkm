@@ -1,4 +1,4 @@
-/* src/components/pages/NotePage.module.css */
+/* FILE: ./src/components/pages/NotePage.module.css */
 @reference "tailwindcss";
 
 /* --- Layout, Header, and Input Styles (Unchanged) --- */
@@ -34,38 +34,36 @@
   @apply p-8 text-center text-red-500;
 }
 
-/* ✅ THIS IS THE FIX ✅ */
+/* --- CORRECTED: Heading Styles (border removed) --- */
+.editor h1 {
+  @apply mt-6 mb-4 text-3xl font-bold;
+}
+.editor h2 {
+  @apply mt-5 mb-3 text-2xl font-bold;
+}
+.editor h3 {
+  @apply mt-4 mb-2 text-xl font-bold;
+}
 
-/* 1. Reset the base list styles */
+/* --- List Styling (Unchanged) --- */
 .editor ul {
   @apply m-0 list-none p-0;
 }
-
-/* 2. Indent each list item and set it as the positioning context */
 .editor li {
-  @apply relative pl-6; /* Indents the entire line */
+  @apply relative pl-6;
 }
-
-/* 3. Attach the bullet to the list item itself */
 .editor li::before {
-  @apply absolute left-0; /* Positions the bullet at the start of the indented line */
+  @apply absolute left-0;
   content: "•";
 }
-
-/* 4. No changes needed for paragraphs, they will just flow naturally */
 .editor ul li > p {
-  /* This rule can be empty or removed if not needed for other styles */
 }
-
-/* 5. Update the nested selectors to target li::before */
 .editor ul ul li::before {
   content: "◦";
 }
-
 .editor ul ul ul li::before {
   content: "▪";
 }
-
 .editor ul ul ul ul li::before {
   content: "–";
 }

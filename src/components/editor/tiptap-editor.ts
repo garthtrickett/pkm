@@ -21,10 +21,7 @@ export class TiptapEditor extends LitElement {
       element: this,
       extensions: [
         StarterKit.configure({
-          blockquote: false,
-          codeBlock: false,
-          heading: false,
-          horizontalRule: false,
+          hardBreak: false,
         }),
         MovableNodes,
       ],
@@ -66,9 +63,6 @@ export class TiptapEditor extends LitElement {
         JSON.stringify(this.initialContent);
 
       if (!isSame) {
-        // The second argument must be an options object. We pass { emitUpdate: false }
-        // to prevent this programmatic update from firing another `onUpdate` event,
-        // which would cause an infinite loop.
         this.editor.commands.setContent(this.initialContent, {
           emitUpdate: false,
         });
@@ -94,65 +88,63 @@ export class TiptapEditor extends LitElement {
 
 import { type TiptapDoc, type TiptapNode } from "../../lib/shared/schemas";
 
-/**
- * Recursively converts a Tiptap node to its Markdown representation.
- * @param node The Tiptap node to convert.
- * @param indent The current indentation string for nesting.
- * @returns The Markdown string for the node.
- */
 const convertNodeToMarkdown = (node: TiptapNode, indent = ""): string => {
-  // Use a switch statement for exhaustive type checking and proper type narrowing.
   switch (node.type) {
     case "text":
       return node.text ?? "";
 
-    case "paragraph":
-      // Paragraphs join their content (which are text nodes).
-      return (
-        (node.content
+    case "heading": {
+      const level = node.attrs?.level || 1;
+      const prefix = "#".repeat(level);
+      const text =
+        node.content
           ?.map((child) => convertNodeToMarkdown(child, indent))
-          .join("") ?? "") + "\n"
-      );
+          .join("") ?? "";
+      return `${prefix} ${text}`;
+    }
 
-    case "bulletList":
-      // Bullet lists join their content (list items).
+    case "paragraph":
       return (
         node.content
           ?.map((child) => convertNodeToMarkdown(child, indent))
           .join("") ?? ""
       );
 
+    case "bulletList":
+      return (
+        node.content
+          ?.map((child) => convertNodeToMarkdown(child, indent))
+          .join("\n") ?? ""
+      );
+
     case "listItem": {
-      // List items add a bullet and handle nested content.
       const itemContent =
         node.content
           ?.map((childNode) => {
-            // Increase indentation ONLY for nested lists.
             const childIndent =
               childNode.type === "bulletList" ? indent + "  " : "";
             return convertNodeToMarkdown(childNode, childIndent);
           })
           .join("") ?? "";
-
-      // Remove trailing newline from the paragraph to keep it on the same line as the bullet.
-      return `${indent}- ${itemContent.replace(/\n$/, "")}\n`;
+      return `${indent}- ${itemContent}`;
     }
 
-    // Default case for any unhandled node types.
     default:
       return "";
   }
 };
 
-/**
- * Converts a full Tiptap document object into a Markdown string.
- * @param doc The Tiptap document object.
- * @returns A Markdown string representation.
- */
 export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
-  if (!doc.content) {
+  if (!doc.content || doc.content.length === 0) {
     return "";
   }
-  // Process all top-level nodes and join them together.
-  return doc.content.map((node) => convertNodeToMarkdown(node, "")).join("");
+
+  // ✅ THIS IS THE FIX ✅
+  // Join each block with two newlines, and add a final trailing newline
+  // to ensure the parser always has the correct block separation context.
+  const markdown =
+    doc.content.map((node) => convertNodeToMarkdown(node, "")).join("\n\n") +
+    "\n";
+
+  return markdown;
 };

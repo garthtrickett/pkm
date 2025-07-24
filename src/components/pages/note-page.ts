@@ -24,7 +24,11 @@ import {
 } from "../../lib/client/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
 import { convertTiptapToMarkdown } from "../editor/tiptap-editor";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
 
+// (Model, Action, and update function are unchanged)
+// ...
 // --- Model ---
 type Status = "loading" | "idle" | "saving" | "error";
 interface Model {
@@ -32,6 +36,7 @@ interface Model {
   blocks: Block[];
   status: Status;
   isMarkdownView: boolean;
+  markdownText: string;
   error: NotePageError | null;
 }
 
@@ -44,67 +49,76 @@ type Action =
       type: "UPDATE_FIELD";
       payload: Partial<Pick<AppNote, "title" | "content">>;
     }
+  | { type: "UPDATE_MARKDOWN_TEXT"; payload: string }
   | { type: "TOGGLE_MARKDOWN_VIEW" }
-  | { type: "SAVE_SUCCESS" } // Add this line
+  | { type: "SAVE_SUCCESS" }
   | { type: "SAVE_ERROR"; payload: NoteSaveError };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
-  let newState: Model;
-
   switch (action.type) {
     case "INITIALIZE_START":
-      newState = {
+      return {
         ...model,
         status: "loading",
         error: null,
         note: null,
-        isMarkdownView: false,
         blocks: [],
       };
-      break;
     case "INITIALIZE_ERROR":
-      newState = { ...model, status: "error", error: action.payload };
-      break;
+      return { ...model, status: "error", error: action.payload };
     case "DATA_UPDATED":
-      if (model.status === "saving") {
-        newState = model;
-        break;
-      }
-      newState = {
+      if (model.status === "saving") return model;
+      return {
         ...model,
         note: action.payload.note,
         blocks: action.payload.blocks,
         status: "idle",
         error: null,
       };
-      break;
     case "UPDATE_FIELD":
-      if (!model.note) {
-        newState = model;
-        break;
-      }
-      newState = {
+      if (!model.note) return model;
+      return {
         ...model,
         note: { ...model.note, ...action.payload },
         status: "saving",
         error: null,
       };
-      break;
-    case "TOGGLE_MARKDOWN_VIEW":
-      newState = { ...model, isMarkdownView: !model.isMarkdownView };
-      break;
+    case "TOGGLE_MARKDOWN_VIEW": {
+      const isSwitchingToMarkdown = !model.isMarkdownView;
+      if (isSwitchingToMarkdown) {
+        return {
+          ...model,
+          isMarkdownView: true,
+          markdownText: model.note
+            ? convertTiptapToMarkdown(model.note.content)
+            : "",
+        };
+      } else {
+        return {
+          ...model,
+          isMarkdownView: false,
+          note: model.note
+            ? {
+                ...model.note,
+                content: new NotePage()._convertMarkdownToTiptap(
+                  model.markdownText,
+                ),
+              }
+            : null,
+          status: "saving",
+        };
+      }
+    }
+    case "UPDATE_MARKDOWN_TEXT":
+      return { ...model, markdownText: action.payload };
     case "SAVE_SUCCESS":
-      newState = { ...model, status: "idle" };
-      break;
+      return { ...model, status: "idle" };
     case "SAVE_ERROR":
-      newState = { ...model, status: "error", error: action.payload };
-      break;
+      return { ...model, status: "error", error: action.payload };
     default:
-      newState = model;
+      return model;
   }
-
-  return newState;
 };
 
 @customElement("note-page")
@@ -119,16 +133,117 @@ export class NotePage extends LitElement {
       blocks: [],
       status: "loading",
       isMarkdownView: false,
+      markdownText: "",
       error: null,
     },
     update,
-    () => Effect.void,
+    (action, model) => {
+      if (action.type === "TOGGLE_MARKDOWN_VIEW" && !model.isMarkdownView) {
+        this._scheduleSave();
+      }
+      return Effect.void;
+    },
   );
+
   private _replicacheUnsubscribe: (() => void) | undefined;
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
   private _isInitialized = false;
 
+  _convertMarkdownToTiptap(markdown: string): TiptapDoc {
+    const conversionEditor = new Editor({
+      extensions: [StarterKit.configure({ hardBreak: false })],
+      content: markdown,
+    });
+    const jsonContent = conversionEditor.getJSON() as TiptapDoc;
+    conversionEditor.destroy();
+    return jsonContent;
+  }
+
+  // ✅ 3. RESTORED: This method was missing.
+  private _handleMarkdownInput = (e: Event) => {
+    const markdownText = (e.target as HTMLTextAreaElement).value;
+    this.ctrl.propose({
+      type: "UPDATE_MARKDOWN_TEXT",
+      payload: markdownText,
+    });
+  };
+
+  private _handleMarkdownKeyDown = (e: KeyboardEvent) => {
+    const target = e.target as HTMLTextAreaElement;
+    const { selectionStart, value } = target;
+
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const indent = "  ";
+      let lineStart = selectionStart;
+      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
+        lineStart--;
+      }
+
+      if (e.shiftKey) {
+        // Outdent
+        if (value.substring(lineStart, lineStart + indent.length) === indent) {
+          target.value =
+            value.substring(0, lineStart) +
+            value.substring(lineStart + indent.length);
+          target.selectionStart = target.selectionEnd = Math.max(
+            lineStart,
+            selectionStart - indent.length,
+          );
+        }
+      } else {
+        // Indent
+        target.value =
+          value.substring(0, lineStart) + indent + value.substring(lineStart);
+        target.selectionStart = target.selectionEnd =
+          selectionStart + indent.length;
+      }
+      target.dispatchEvent(
+        new Event("input", { bubbles: true, composed: true }),
+      );
+    } else if (e.key === "Enter") {
+      let lineStart = selectionStart;
+      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
+        lineStart--;
+      }
+      const currentLine = value.substring(lineStart, selectionStart);
+      const listMarkerMatch = currentLine.match(/^(\s*([-*]|\d+\.\s))/);
+
+      if (listMarkerMatch) {
+        e.preventDefault();
+        const marker = listMarkerMatch[1];
+        let nextMarker = marker;
+
+        // ✅ 1. ADDED: Safety check for the 'marker' variable.
+        if (marker) {
+          const numberedListMatch = marker.match(/^(\s*)(\d+)\.\s/);
+          // ✅ 2. ADDED: Safety check for numbered list capture groups.
+          if (
+            numberedListMatch &&
+            numberedListMatch[1] !== undefined &&
+            numberedListMatch[2]
+          ) {
+            const num = parseInt(numberedListMatch[2], 10);
+            nextMarker = `${numberedListMatch[1]}${num + 1}. `;
+          }
+        }
+
+        const textToInsert = "\n" + (nextMarker || "");
+        target.value =
+          value.substring(0, selectionStart) +
+          textToInsert +
+          value.substring(selectionStart);
+        target.selectionStart = target.selectionEnd =
+          selectionStart + textToInsert.length;
+        target.dispatchEvent(
+          new Event("input", { bubbles: true, composed: true }),
+        );
+      }
+    }
+  };
+
+  // ... the rest of the file is unchanged ...
   private _initializeState() {
     this._replicacheUnsubscribe?.();
     this.ctrl.propose({ type: "INITIALIZE_START" });
@@ -261,8 +376,6 @@ export class NotePage extends LitElement {
     }
   }
 
-  // ✅ THE FIX (Part 1): This effect no longer accepts a stale `noteToSave` argument.
-  // It reads the fresh state from the controller's model when it executes.
   private _flushChangesEffect = (): Effect.Effect<
     void,
     NoteSaveError,
@@ -271,16 +384,10 @@ export class NotePage extends LitElement {
     Effect.gen(
       function* (this: NotePage) {
         const replicache = yield* ReplicacheService;
-        const noteToSave = this.ctrl.model.note; // Read the LATEST model state
-
-        if (!noteToSave) {
+        const noteToSave = this.ctrl.model.note;
+        if (!noteToSave || !noteToSave.content) {
           return;
         }
-
-        if (!noteToSave.content) {
-          return;
-        }
-
         yield* Effect.tryPromise({
           try: () =>
             replicache.client.mutate.updateNote({
@@ -302,7 +409,6 @@ export class NotePage extends LitElement {
     }
     runClientUnscoped(
       this._flushChangesEffect().pipe(
-        // No argument passed
         Effect.catchTag("NoteSaveError", (error) =>
           Effect.sync(() =>
             this.ctrl.propose({ type: "SAVE_ERROR", payload: error }),
@@ -329,9 +435,6 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
-
-    // ✅ THE FIX (Part 2): The debounced effect no longer closes over the stale `noteToSave`.
-    // It will call the argument-less `_flushChangesEffect` which reads fresh state.
     const debouncedSave = Effect.sleep(Duration.millis(500)).pipe(
       Effect.andThen(this._flushChangesEffect()),
       Effect.match({
@@ -350,7 +453,6 @@ export class NotePage extends LitElement {
   override render() {
     const { note, error, status } = this.ctrl.model;
     const getErrorMessage = (e: NotePageError | null): string | null => {
-      // Add this line
       if (!e) return null;
       switch (e._tag) {
         case "NoteNotFoundError":
@@ -407,9 +509,10 @@ export class NotePage extends LitElement {
           />
           ${this.ctrl.model.isMarkdownView
             ? html`<textarea
-                readonly
                 class=${styles.markdownPreview}
-                .value=${convertTiptapToMarkdown(note.content)}
+                .value=${this.ctrl.model.markdownText}
+                @input=${this._handleMarkdownInput}
+                @keydown=${this._handleMarkdownKeyDown}
               ></textarea>`
             : html`<tiptap-editor
                 .initialContent=${note.content}
