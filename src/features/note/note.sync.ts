@@ -38,10 +38,10 @@ export const noteSyncHandler: SyncableEntity = {
       );
 
       for (const note of changedNotes) {
-        // This is the fix. We encode the 'unknown' content into the specific
-        // TiptapDoc type that the client's schema expects.
-        const encodedContent = Schema.encodeSync(TiptapDocSchema)(
-          note.content as any,
+        // ✅ FIX: Decode the `unknown` content from the database into the specific
+        // TiptapDoc type. This validates the data and removes the unsafe `any` cast.
+        const decodedContent = Schema.decodeUnknownSync(TiptapDocSchema)(
+          note.content,
         );
 
         patch.push({
@@ -52,7 +52,7 @@ export const noteSyncHandler: SyncableEntity = {
             id: note.id,
             user_id: note.user_id,
             title: note.title,
-            content: encodedContent,
+            content: decodedContent, // Use the safely decoded content
             version: note.version,
             created_at: note.created_at.toISOString(),
             updated_at: note.updated_at.toISOString(),

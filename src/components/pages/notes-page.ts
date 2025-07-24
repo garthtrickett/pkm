@@ -14,9 +14,7 @@ import {
   type AppNote,
   type NoteId,
   type TiptapDoc,
-  // Import the specific node types for clarity
-  type TiptapParagraphNode,
-  type TiptapTextNode,
+  type TiptapNode,
 } from "../../lib/shared/schemas";
 import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
 import { v4 as uuidv4 } from "uuid";
@@ -31,23 +29,38 @@ import {
 
 // Utility to get plain text from a Tiptap document
 const getTextFromTiptapDoc = (doc: TiptapDoc): string => {
-  if (!doc || !Array.isArray(doc.content)) {
+  // Guard against null/undefined doc or content
+  if (!doc?.content) {
     return "";
   }
-  // Iterate through nodes and concatenate text content
-  return doc.content
-    .map(
-      (block) =>
-        block.content
-          // Add explicit types for 'p' and 't'
-          ?.map(
-            (p: TiptapParagraphNode) =>
-              p.content?.map((t: TiptapTextNode) => t.text).join("") || "",
-          )
-          .join("\n") || "",
-    )
-    .join("\n")
-    .trim();
+
+  // Recursive helper function to process an array of nodes
+  const traverse = (nodes: readonly TiptapNode[]): string => {
+    return nodes
+      .map((node) => {
+        // Type-safe switch on the node's `type` property
+        switch (node.type) {
+          case "text":
+            // This is a text node, return its content directly.
+            return node.text;
+
+          // These are container nodes.
+          case "paragraph":
+          case "listItem":
+          case "bulletList":
+            // If they have content, recursively traverse it.
+            return node.content ? traverse(node.content) : "";
+
+          // Handle any other node types we don't care about.
+          default:
+            return "";
+        }
+      })
+      .join(""); // Concatenate the text from all children
+  };
+
+  // Start the traversal and trim the final result
+  return traverse(doc.content).trim();
 };
 
 // --- Model ---
@@ -309,9 +322,7 @@ export class NotesPage extends LitElement {
                 notes,
                 (note) => note.id,
                 (note) => {
-                  const contentPreview = getTextFromTiptapDoc(
-                    note.content,
-                  );
+                  const contentPreview = getTextFromTiptapDoc(note.content);
                   return html`
                     <div class="group relative">
                       <a

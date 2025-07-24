@@ -5,7 +5,8 @@ import {
   type WriteTransaction,
   type Puller,
   makeIDBName,
-  type PullRequest,
+  type PullRequest as ReplicachePullRequest, // Renamed import
+  type PullerResult, // Import PullerResult
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type {
@@ -43,14 +44,12 @@ const mutators = {
     args: { id: NoteId; userID: UserId; title: string },
   ): Promise<ReadonlyJSONValue> => {
     const now = new Date();
-    // Create an empty Tiptap document as the default content
     const emptyContent: TiptapDoc = {
       type: "doc",
       content: [
         {
-          type: "blockNode",
-          attrs: { depth: 0 },
-          content: [{ type: "paragraph" }],
+          type: "paragraph",
+          content: [],
         },
       ],
     };
@@ -65,7 +64,6 @@ const mutators = {
       updated_at: now,
     };
 
-    // This is the fix. Replicache needs a plain JSON object.
     const jsonCompatibleNote = {
       ...newNote,
       content: Schema.encodeSync(TiptapDocSchema)(newNote.content),
@@ -73,18 +71,24 @@ const mutators = {
       updated_at: newNote.updated_at.toISOString(),
     };
 
-    await tx.set(`note/${newNote.id}`, jsonCompatibleNote);
-    return jsonCompatibleNote;
+    await tx.set(
+      `note/${newNote.id}`,
+      jsonCompatibleNote as unknown as ReadonlyJSONValue,
+    );
+    return jsonCompatibleNote as unknown as ReadonlyJSONValue;
   },
   updateNote: async (
     tx: WriteTransaction,
     args: { id: NoteId; title: string; content: TiptapDoc },
   ) => {
+    // [DEBUG] Log arguments received by the mutator
+
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
-    if (!noteJSON) return; // Note might have been deleted
+    if (!noteJSON) {
+      return;
+    }
 
-    // Decode from the DB format (with unknown content) to our application type
     const note = Schema.decodeUnknownSync(NoteSchema)(noteJSON);
 
     const updatedNote: AppNote = {
@@ -95,14 +99,14 @@ const mutators = {
       updated_at: new Date(),
     };
 
-    // Encode back to a plain JSON object for storage
     const jsonCompatibleUpdate = {
       ...updatedNote,
       content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content),
       created_at: updatedNote.created_at.toISOString(),
       updated_at: updatedNote.updated_at.toISOString(),
     };
-    await tx.set(noteKey, jsonCompatibleUpdate);
+
+    await tx.set(noteKey, jsonCompatibleUpdate as unknown as ReadonlyJSONValue);
   },
   deleteNote: async (tx: WriteTransaction, { id }: { id: NoteId }) => {
     await tx.del(`note/${id}`);
@@ -118,7 +122,9 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-const debugPuller: Puller = (request: PullRequest) => {
+const debugPuller: Puller = (
+  request: ReplicachePullRequest,
+): Promise<PullerResult> => {
   const pullEffect = Effect.tryPromise({
     try: async () => {
       if (!("clientGroupID" in request)) {
@@ -149,13 +155,15 @@ const debugPuller: Puller = (request: PullRequest) => {
       const pullResponse = Schema.decodeUnknownSync(PullResponseSchema)(
         JSON.parse(responseText),
       );
+      // This explicit cast tells TypeScript that we are correctly returning
+      // a member of the PullerResult union type, resolving the ambiguity.
       return {
         response: pullResponse,
         httpRequestInfo: {
           httpStatusCode: response.status,
           errorMessage: "",
         },
-      };
+      } as PullerResult;
     },
     catch: (error: unknown) => {
       let httpStatusCode = 0;
@@ -171,7 +179,7 @@ const debugPuller: Puller = (request: PullRequest) => {
       return {
         response: undefined,
         httpRequestInfo: { httpStatusCode, errorMessage },
-      };
+      } as PullerResult; // Also cast the error case for consistency.
     },
   });
 
@@ -222,22 +230,16 @@ export const ReplicacheLive = (
         mutators,
       });
 
-      // Fork the WebSocket manager to run in the background.
-      // It will live and die with this scope.
       yield* setupWebSocket(client).pipe(Effect.forkDaemon);
 
-      // We no longer receive a `ws` object, so we only return the client.
       return { client };
     }),
     ({ client }) =>
-      // The release function no longer receives `ws`.
       Effect.gen(function* () {
         yield* clientLog(
           "info",
           "[ReplicacheLive] Releasing scope. Closing Replicache client.",
         );
-        // The forked WebSocket daemon is automatically interrupted and cleaned up.
-        // We only need to close the Replicache client.
         yield* Effect.promise(() => client.close());
       }).pipe(Effect.orDie),
   ).pipe(Effect.map(({ client }) => ({ client })));

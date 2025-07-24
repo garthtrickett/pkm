@@ -10,6 +10,11 @@ import {
   UserIdSchema,
   type TiptapDoc,
   TiptapDocSchema,
+  type TiptapNode,
+  type TiptapParagraphNode,
+  type TiptapTextNode,
+  type TiptapBulletListNode,
+  type TiptapListItemNode,
 } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
@@ -17,58 +22,98 @@ import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
 import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
 
+type TraversableNode =
+  | TiptapParagraphNode
+  | TiptapBulletListNode
+  | TiptapListItemNode;
+
 const parseContentToBlocks = (
   noteId: NoteId,
   userId: UserId,
   contentJSON: TiptapDoc,
 ): NewBlock[] => {
-  const tiptapBlocks = contentJSON.content || [];
   const parsedBlocks: NewBlock[] = [];
-  const parentStack: (BlockId | null)[] = [null]; // stack to track parent IDs by depth
-  const orderCounters: Map<BlockId | "root", number> = new Map();
 
-  for (const blockNode of tiptapBlocks) {
-    if (blockNode.type !== "blockNode" || !blockNode.content) continue;
+  const traverseNodes = (
+    nodes: ReadonlyArray<TraversableNode> | undefined,
+    parentId: BlockId | null,
+    depth: number,
+  ) => {
+    if (!nodes) return;
 
-    const newBlockId = uuidv4() as BlockId;
-    const depth = blockNode.attrs?.depth ?? 0;
-    const textContent =
-      blockNode.content
-        ?.map((p) => p.content?.map((t) => t.text).join("") || "")
-        .join("\n") || "";
+    let order = 0;
+    for (const node of nodes) {
+      if (node.type === "bulletList" && node.content) {
+        traverseNodes(node.content, parentId, depth);
+      } else if (node.type === "listItem" && node.content) {
+        const newBlockId = uuidv4() as BlockId;
 
-    // Determine parent and order
-    const parentId = depth > 0 ? parentStack[depth - 1] : null;
-    const parentKey = parentId || "root";
-    const order = orderCounters.get(parentKey) || 0;
-    orderCounters.set(parentKey, order + 1);
+        // ✅ FIX: Changed `listItem.content` to `node.content`
+        const paragraphNode = node.content.find(
+          (n: TiptapNode): n is TiptapParagraphNode => n.type === "paragraph",
+        );
+        const textContent =
+          paragraphNode?.content
+            ?.map((t: TiptapTextNode) => t.text)
+            .join("")
+            .trim() || "";
 
-    // Update parent stack
-    parentStack[depth] = newBlockId;
-    parentStack.length = depth + 1; // Prune deeper levels
+        parsedBlocks.push({
+          id: newBlockId,
+          note_id: noteId,
+          user_id: userId,
+          parent_id: parentId,
+          type: "text",
+          content: textContent,
+          depth,
+          order: order++,
+          version: 1,
+          fields: {},
+          tags: [],
+          links: [],
+          transclusions: [],
+          file_path: "",
+        });
 
-    parsedBlocks.push({
-      id: newBlockId,
-      note_id: noteId,
-      user_id: userId,
-      parent_id: parentId,
-      type: "text", // Default type for now
-      content: textContent,
-      depth,
-      order,
-      version: 1,
-      fields: {},
-      tags: [],
-      links: [],
-      transclusions: [],
-      file_path: "",
-    });
-  }
+        // ✅ FIX: Changed `listItem.content` to `node.content`
+        const nestedList = node.content.find(
+          (n: TiptapNode): n is TiptapBulletListNode => n.type === "bulletList",
+        );
 
+        if (nestedList && nestedList.content) {
+          traverseNodes(nestedList.content, newBlockId, depth + 1);
+        }
+      } else if (node.type === "paragraph") {
+        const textContent =
+          node.content
+            ?.map((t: TiptapTextNode) => t.text)
+            .join("")
+            .trim() || "";
+        if (textContent) {
+          parsedBlocks.push({
+            id: uuidv4() as BlockId,
+            note_id: noteId,
+            user_id: userId,
+            parent_id: parentId,
+            type: "text",
+            content: textContent,
+            depth,
+            order: order++,
+            version: 1,
+            fields: {},
+            tags: [],
+            links: [],
+            transclusions: [],
+            file_path: "",
+          });
+        }
+      }
+    }
+  };
+
+  traverseNodes(contentJSON.content, null, 0);
   return parsedBlocks;
 };
-
-// --- Mutation Argument Schemas ---
 export const CreateNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
   userID: UserIdSchema,
@@ -88,8 +133,6 @@ export const DeleteNoteArgsSchema = Schema.Struct({
 });
 export type DeleteNoteArgs = Schema.Schema.Type<typeof DeleteNoteArgsSchema>;
 
-// --- Mutation Handlers ---
-
 export const handleCreateNote = (
   args: CreateNoteArgs,
 ): Effect.Effect<void, Error, Db | Auth> =>
@@ -101,7 +144,7 @@ export const handleCreateNote = (
     const newNote: NewNote = {
       id: args.id,
       title: args.title,
-      content: { type: "doc", content: [] }, // Start with empty Tiptap content
+      content: { type: "doc", content: [] },
       user_id: user!.id,
       version: 1,
       created_at: now,
@@ -120,15 +163,12 @@ export const handleUpdateNote = (
     yield* Effect.logInfo(
       `[handleUpdateNote] Starting update for noteId: ${args.id}`,
     );
-    const db = yield* Db; // This 'db' object IS the transaction from push.ts
+    const db = yield* Db;
     const { user } = yield* Auth;
     const linkService = yield* LinkService;
     const taskService = yield* TaskService;
 
-    // All async logic now happens inside this single promise,
-    // using the 'db' object which is already a transaction.
     const updateAllEffect = Effect.promise(async () => {
-      // 1. Update the main note content
       await db
         .updateTable("note")
         .set({
@@ -141,26 +181,19 @@ export const handleUpdateNote = (
         .where("user_id", "=", user!.id)
         .execute();
 
-      // 2. Delete old blocks associated with the note
       await db.deleteFrom("block").where("note_id", "=", args.id).execute();
 
-      // 3. Parse new content and insert new blocks
       const newBlocks = parseContentToBlocks(args.id, user!.id, args.content);
       if (newBlocks.length > 0) {
         await db.insertInto("block").values(newBlocks).execute();
       }
 
-      // --- START OF FIX: Provide the Db (transaction) to the services ---
-      // 4. Sync links and tasks using the SAME transaction.
-      // We create an effect pipeline that provides the `db` service to each sub-task.
       const syncServicesEffect = Effect.all([
         linkService.updateLinksForNote(args.id, user!.id),
         taskService.syncTasksForNote(args.id, user!.id),
-      ]).pipe(Effect.provideService(Db, db)); // <-- This provides the dependency
+      ]).pipe(Effect.provideService(Db, db));
 
-      // Run the pipeline.
       await Effect.runPromise(syncServicesEffect);
-      // --- END OF FIX ---
     }).pipe(
       Effect.catchAll((cause) =>
         Effect.logError("!!! DATABASE TRANSACTION FAILED !!!", cause).pipe(

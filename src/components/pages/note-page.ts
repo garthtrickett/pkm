@@ -48,7 +48,6 @@ type Action =
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
-  const oldStatus = model.status;
   let newState: Model;
 
   switch (action.type) {
@@ -65,6 +64,10 @@ const update = (model: Model, action: Action): Model => {
       newState = { ...model, status: "error", error: action.payload };
       break;
     case "DATA_UPDATED":
+      if (model.status === "saving") {
+        newState = model;
+        break;
+      }
       newState = {
         ...model,
         note: action.payload.note,
@@ -95,12 +98,6 @@ const update = (model: Model, action: Action): Model => {
       newState = model;
   }
 
-  console.log(`[note-page update] Action: ${action.type}`, {
-    oldStatus,
-    newStatus: newState.status,
-    hasNote: !!newState.note,
-  });
-
   return newState;
 };
 
@@ -108,10 +105,6 @@ const update = (model: Model, action: Action): Model => {
 export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
-
-  // ✅ FIX: The stateful property for the editor instance is no longer needed.
-  // @state()
-  // private _editorInstance?: TiptapEditor;
 
   private ctrl = new ReactiveSamController<this, Model, Action, NotePageError>(
     this,
@@ -135,9 +128,6 @@ export class NotePage extends LitElement {
 
         const replicache = yield* ReplicacheService;
         const noteKey = `note/${this.id}`;
-        console.log(
-          `[note-page] Initializing subscription for noteKey: ${noteKey}`,
-        );
 
         this._replicacheUnsubscribe = replicache.client.subscribe(
           (tx) =>
@@ -147,16 +137,10 @@ export class NotePage extends LitElement {
                 .values()
                 .toArray()
                 .then((allBlocks) => {
-                  console.log(
-                    `[note-page subscribe query] Found note: ${!!note}`,
-                  );
                   return { note, allBlocks };
                 }),
             ),
           (result) => {
-            console.log(
-              `[note-page subscribe callback] Fired. Has note: ${!!result.note}`,
-            );
             if (!result.note) {
               if (this.ctrl.model.status !== "loading") {
                 this.ctrl.propose({
@@ -195,9 +179,6 @@ export class NotePage extends LitElement {
             Effect.runCallback(resilientParseEffect, {
               onExit: (exit) => {
                 if (Exit.isSuccess(exit)) {
-                  console.log(
-                    "[note-page subscribe callback] Data parsed successfully. Proposing DATA_UPDATED.",
-                  );
                   const { note, blocks } = exit.value;
                   const sortedBlocks = [...blocks].sort(
                     (a, b) => a.order - b.order,
@@ -268,6 +249,8 @@ export class NotePage extends LitElement {
     }
   }
 
+  // ✅ THE FIX (Part 1): This effect no longer accepts a stale `noteToSave` argument.
+  // It reads the fresh state from the controller's model when it executes.
   private _flushChangesEffect = (): Effect.Effect<
     void,
     NoteSaveError,
@@ -275,27 +258,17 @@ export class NotePage extends LitElement {
   > =>
     Effect.gen(
       function* (this: NotePage) {
-        console.log("[note-page _flushChangesEffect] Starting flush.");
         const replicache = yield* ReplicacheService;
-        const noteToSave = this.ctrl.model.note;
+        const noteToSave = this.ctrl.model.note; // Read the LATEST model state
+
         if (!noteToSave) {
-          console.warn(
-            "[note-page _flushChangesEffect] No note in model to save. Exiting.",
-          );
           return;
         }
 
-        // ✅ FIX: The content is now reliably read from the component's state model.
         if (!noteToSave.content) {
-          console.warn(
-            "[note-page _flushChangesEffect] No content in model to save. Exiting.",
-          );
           return;
         }
 
-        console.log(
-          "[note-page _flushChangesEffect] Calling replicache.mutate.updateNote",
-        );
         yield* Effect.tryPromise({
           try: () =>
             replicache.client.mutate.updateNote({
@@ -305,9 +278,6 @@ export class NotePage extends LitElement {
             }),
           catch: (cause) => new NoteSaveError({ cause }),
         });
-        console.log(
-          "[note-page _flushChangesEffect] replicache.mutate.updateNote finished.",
-        );
       }.bind(this),
     );
 
@@ -320,6 +290,7 @@ export class NotePage extends LitElement {
     }
     runClientUnscoped(
       this._flushChangesEffect().pipe(
+        // No argument passed
         Effect.catchTag("NoteSaveError", (error) =>
           Effect.sync(() =>
             this.ctrl.propose({ type: "SAVE_ERROR", payload: error }),
@@ -330,14 +301,11 @@ export class NotePage extends LitElement {
   };
 
   private _handleInput(updateField: Partial<Pick<AppNote, "title">>) {
-    console.log("[note-page _handleInput] Fired for title change.");
     this.ctrl.propose({ type: "UPDATE_FIELD", payload: updateField });
-    this._scheduleSave(); // Trigger a save when title changes too
+    this._scheduleSave();
   }
 
-  // ✅ FIX: Renamed _onEditorUpdate to a more generic name and accept the event.
   private _handleEditorUpdate = (e: CustomEvent<{ content: TiptapDoc }>) => {
-    console.log("[note-page _handleEditorUpdate] Fired for content change.");
     this.ctrl.propose({
       type: "UPDATE_FIELD",
       payload: { content: e.detail.content },
@@ -345,23 +313,21 @@ export class NotePage extends LitElement {
     this._scheduleSave();
   };
 
-  // ✅ FIX: Extracted the debouncing logic into its own method.
   private _scheduleSave = () => {
     if (this._saveFiber) {
-      console.log(
-        "[note-page _scheduleSave] Interrupting previous save fiber.",
-      );
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
+
+    // ✅ THE FIX (Part 2): The debounced effect no longer closes over the stale `noteToSave`.
+    // It will call the argument-less `_flushChangesEffect` which reads fresh state.
     const debouncedSave = Effect.sleep(Duration.millis(500)).pipe(
       Effect.andThen(this._flushChangesEffect()),
-      Effect.catchTag("NoteSaveError", (error) =>
-        Effect.sync(() =>
+      Effect.match({
+        onFailure: (error) =>
           this.ctrl.propose({ type: "SAVE_ERROR", payload: error }),
-        ),
-      ),
+        onSuccess: () => this.ctrl.propose({ type: "SAVE_SUCCESS" }),
+      }),
     );
-    console.log("[note-page _scheduleSave] Scheduling new debounced save.");
     this._saveFiber = runClientUnscoped(debouncedSave);
   };
 

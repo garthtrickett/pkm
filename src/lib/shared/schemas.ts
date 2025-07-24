@@ -33,11 +33,6 @@ export const BlockIdSchema: Schema.Schema<BlockId, string, never> = (
   UUIDSchemaBase as unknown as Schema.Schema<BlockId, string, never>
 ).pipe(Schema.annotations({ message: () => "Invalid Block ID format." }));
 
-// Describes the attributes of our custom block node
-const TiptapBlockAttributesSchema = Schema.Struct({
-  depth: Schema.optional(Schema.Number),
-});
-
 // Describes a simple text node inside a paragraph
 export const TiptapTextNodeSchema = Schema.Struct({
   type: Schema.Literal("text"),
@@ -54,22 +49,58 @@ export type TiptapParagraphNode = Schema.Schema.Type<
   typeof TiptapParagraphNodeSchema
 >;
 
-// Describes our custom block node
-const TiptapBlockNodeSchema = Schema.Struct({
-  type: Schema.Literal("blockNode"),
-  attrs: Schema.optional(TiptapBlockAttributesSchema),
-  content: Schema.optional(Schema.Array(TiptapParagraphNodeSchema)),
-});
+// --- Strengthened Recursive Schemas ---
+
+// 1. Forward-declare interfaces for recursive types to break circular dependencies.
+export interface TiptapListItemNode {
+  readonly type: "listItem";
+  readonly content: ReadonlyArray<TiptapParagraphNode | TiptapBulletListNode>;
+}
+
+export interface TiptapBulletListNode {
+  readonly type: "bulletList";
+  readonly content: ReadonlyArray<TiptapListItemNode>;
+}
+
+// 2. Define schemas using the forward-declared interfaces to avoid `any`.
+const TiptapListItemNodeSchema: Schema.Schema<TiptapListItemNode> =
+  Schema.suspend(() =>
+    Schema.Struct({
+      type: Schema.Literal("listItem"),
+      content: Schema.Array(
+        Schema.Union(TiptapParagraphNodeSchema, TiptapBulletListNodeSchema),
+      ),
+    }),
+  );
+
+const TiptapBulletListNodeSchema: Schema.Schema<TiptapBulletListNode> =
+  Schema.suspend(() =>
+    Schema.Struct({
+      type: Schema.Literal("bulletList"),
+      content: Schema.Array(TiptapListItemNodeSchema),
+    }),
+  );
+
+// 3. Create a comprehensive, strongly-typed union for any node type.
+export type TiptapNode =
+  | TiptapParagraphNode
+  | TiptapBulletListNode
+  | TiptapListItemNode
+  | TiptapTextNode;
+
+// --- End of Strengthened Schemas ---
 
 // Describes the top-level document structure from Tiptap
 export const TiptapDocSchema = Schema.Struct({
   type: Schema.Literal("doc"),
-  content: Schema.Array(TiptapBlockNodeSchema),
+  content: Schema.optional(
+    Schema.Array(
+      Schema.Union(TiptapParagraphNodeSchema, TiptapBulletListNodeSchema),
+    ),
+  ),
 });
 export type TiptapDoc = Schema.Schema.Type<typeof TiptapDocSchema>;
 
-// This is the fix. We are creating a schema that can decode the `unknown`
-// from the database `Note` type into our specific `TiptapDoc` type.
 const ContentSchema = Schema.transform(Schema.Unknown, TiptapDocSchema, {
   strict: true,
   decode: (u) => Schema.decodeUnknownSync(TiptapDocSchema)(u),
@@ -80,7 +111,7 @@ export const NoteSchema = Schema.Struct({
   id: NoteIdSchema,
   user_id: UserIdSchema,
   title: Schema.String,
-  content: ContentSchema, // Use the new transforming schema
+  content: ContentSchema,
   created_at: LenientDateSchema,
   updated_at: LenientDateSchema,
   version: Schema.Number,
@@ -108,12 +139,9 @@ export const UserSchema: Schema.Schema<User, any> = Schema.Struct({
   email_verified: Schema.Boolean,
 });
 
-/**
- * A version of the User schema that is safe to send to the client.
- * It omits the sensitive password_hash.
- */
 export const PublicUserSchema = UserSchema.pipe(Schema.omit("password_hash"));
 export type PublicUser = typeof PublicUserSchema.Type;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const BlockSchema: Schema.Schema<Block, any> = Schema.Struct({
   id: BlockIdSchema,
