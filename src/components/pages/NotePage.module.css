@@ -23,6 +23,13 @@
 .contentInput {
   @apply min-h-[60vh] w-full resize-none bg-transparent text-lg text-zinc-700 focus:outline-none;
 }
+.markdownPreview {
+  @apply min-h-[60vh] w-full resize-none rounded-md border border-zinc-200 bg-zinc-50 p-4 font-mono text-sm text-zinc-800 focus:outline-none;
+}
+.header button {
+  @apply text-sm text-zinc-500 hover:text-zinc-800;
+}
+
 .errorText {
   @apply p-8 text-center text-red-500;
 }

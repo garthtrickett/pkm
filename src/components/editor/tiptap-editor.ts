@@ -90,3 +90,34 @@ export class TiptapEditor extends LitElement {
     return this;
   }
 }
+
+/* MIGRATION HELPER */
+
+import { type TiptapDoc, type TiptapNode } from "../../lib/shared/schemas";
+
+const convertNodeToMarkdown = (node: TiptapNode, indent = ""): string => {
+  let text = "";
+
+  if (node.type === "text") {
+    text += node.text;
+  }
+
+  if ("content" in node && node.content) {
+    if (node.type === "listItem") {
+      text += `${indent}- ${node.content
+        .map((n) => convertNodeToMarkdown(n, "  "))
+        .join("")}\n`;
+    } else {
+      text += node.content
+        .map((n) => convertNodeToMarkdown(n, indent))
+        .join("");
+    }
+  }
+  return text;
+};
+
+export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
+  return (
+    doc.content?.map((node) => convertNodeToMarkdown(node)).join("\n") ?? ""
+  );
+};

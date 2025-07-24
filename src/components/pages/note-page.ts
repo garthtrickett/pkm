@@ -23,7 +23,7 @@ import {
   type NotePageError,
 } from "../../lib/client/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
-import "../editor/tiptap-editor";
+import { convertTiptapToMarkdown } from "../editor/tiptap-editor";
 
 // --- Model ---
 type Status = "loading" | "idle" | "saving" | "error";
@@ -31,6 +31,7 @@ interface Model {
   note: AppNote | null;
   blocks: Block[];
   status: Status;
+  isMarkdownView: boolean;
   error: NotePageError | null;
 }
 
@@ -43,7 +44,8 @@ type Action =
       type: "UPDATE_FIELD";
       payload: Partial<Pick<AppNote, "title" | "content">>;
     }
-  | { type: "SAVE_SUCCESS" }
+  | { type: "TOGGLE_MARKDOWN_VIEW" }
+  | { type: "SAVE_SUCCESS" } // Add this line
   | { type: "SAVE_ERROR"; payload: NoteSaveError };
 
 // --- Pure Update Function ---
@@ -57,6 +59,7 @@ const update = (model: Model, action: Action): Model => {
         status: "loading",
         error: null,
         note: null,
+        isMarkdownView: false,
         blocks: [],
       };
       break;
@@ -88,6 +91,9 @@ const update = (model: Model, action: Action): Model => {
         error: null,
       };
       break;
+    case "TOGGLE_MARKDOWN_VIEW":
+      newState = { ...model, isMarkdownView: !model.isMarkdownView };
+      break;
     case "SAVE_SUCCESS":
       newState = { ...model, status: "idle" };
       break;
@@ -108,7 +114,13 @@ export class NotePage extends LitElement {
 
   private ctrl = new ReactiveSamController<this, Model, Action, NotePageError>(
     this,
-    { note: null, blocks: [], status: "loading", error: null },
+    {
+      note: null,
+      blocks: [],
+      status: "loading",
+      isMarkdownView: false,
+      error: null,
+    },
     update,
     () => Effect.void,
   );
@@ -338,6 +350,7 @@ export class NotePage extends LitElement {
   override render() {
     const { note, error, status } = this.ctrl.model;
     const getErrorMessage = (e: NotePageError | null): string | null => {
+      // Add this line
       if (!e) return null;
       switch (e._tag) {
         case "NoteNotFoundError":
@@ -373,7 +386,15 @@ export class NotePage extends LitElement {
         <div class=${styles.editor}>
           <div class=${styles.header}>
             <h2 class=${styles.headerH2}>Edit Note</h2>
-            <div class=${styles.status}>${renderStatus()}</div>
+            <div class="flex items-center gap-4">
+              <button
+                @click=${() =>
+                  this.ctrl.propose({ type: "TOGGLE_MARKDOWN_VIEW" })}
+              >
+                ${this.ctrl.model.isMarkdownView ? "Editor" : "Markdown"}
+              </button>
+              <div class=${styles.status}>${renderStatus()}</div>
+            </div>
           </div>
           <input
             type="text"
@@ -384,10 +405,16 @@ export class NotePage extends LitElement {
                 title: (e.target as HTMLInputElement).value,
               })}
           />
-          <tiptap-editor
-            .initialContent=${note.content}
-            @update=${this._handleEditorUpdate}
-          ></tiptap-editor>
+          ${this.ctrl.model.isMarkdownView
+            ? html`<textarea
+                readonly
+                class=${styles.markdownPreview}
+                .value=${convertTiptapToMarkdown(note.content)}
+              ></textarea>`
+            : html`<tiptap-editor
+                .initialContent=${note.content}
+                @update=${this._handleEditorUpdate}
+              ></tiptap-editor>`}
         </div>
       </div>
     `;
