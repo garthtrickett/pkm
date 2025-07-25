@@ -84,67 +84,36 @@ export class TiptapEditor extends LitElement {
   }
 }
 
-/* MIGRATION HELPER */
+/* MARKDOWN CONVERSION HELPERS */
 
-import { type TiptapDoc, type TiptapNode } from "../../lib/shared/schemas";
+import { ProseMirrorUnified } from "prosemirror-unified";
+import { MarkdownExtension } from "prosemirror-remark";
+import type { TiptapDoc } from "../../lib/shared/schemas";
 
-const convertNodeToMarkdown = (node: TiptapNode, indent = ""): string => {
-  switch (node.type) {
-    case "text":
-      return node.text ?? "";
+// Instantiate the processor once. It can be reused across function calls.
+const pmu = new ProseMirrorUnified([new MarkdownExtension()]);
 
-    case "heading": {
-      const level = node.attrs?.level || 1;
-      const prefix = "#".repeat(level);
-      const text =
-        node.content
-          ?.map((child) => convertNodeToMarkdown(child, indent))
-          .join("") ?? "";
-      return `${prefix} ${text}`;
-    }
-
-    case "paragraph":
-      return (
-        node.content
-          ?.map((child) => convertNodeToMarkdown(child, indent))
-          .join("") ?? ""
-      );
-
-    case "bulletList":
-      return (
-        node.content
-          ?.map((child) => convertNodeToMarkdown(child, indent))
-          .join("\n") ?? ""
-      );
-
-    case "listItem": {
-      const itemContent =
-        node.content
-          ?.map((childNode) => {
-            const childIndent =
-              childNode.type === "bulletList" ? indent + "  " : "";
-            return convertNodeToMarkdown(childNode, childIndent);
-          })
-          .join("") ?? "";
-      return `${indent}- ${itemContent}`;
-    }
-
-    default:
-      return "";
-  }
-};
-
+/**
+ * Converts a Tiptap document (ProseMirror JSON) to a Markdown string
+ * using the prosemirror-remark library for robust serialization.
+ * @param doc The Tiptap document object.
+ * @returns A Markdown string representation of the document.
+ */
 export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
-  if (!doc.content || doc.content.length === 0) {
+  if (!doc || !doc.content || doc.content.length === 0) {
     return "";
   }
+  const prosemirrorNode = pmu.schema().nodeFromJSON(doc);
+  return pmu.serialize(prosemirrorNode);
+};
 
-  // ✅ THIS IS THE FIX ✅
-  // Join each block with two newlines, and add a final trailing newline
-  // to ensure the parser always has the correct block separation context.
-  const markdown =
-    doc.content.map((node) => convertNodeToMarkdown(node, "")).join("\n\n") +
-    "\n";
-
-  return markdown;
+/**
+ * Converts a Markdown string into a Tiptap document (ProseMirror JSON)
+ * using the prosemirror-remark library.
+ * @param markdown The Markdown string to parse.
+ * @returns A Tiptap document object.
+ */
+export const convertMarkdownToTiptap = (markdown: string): TiptapDoc => {
+  const prosemirrorNode = pmu.parse(markdown);
+  return prosemirrorNode.toJSON() as TiptapDoc;
 };

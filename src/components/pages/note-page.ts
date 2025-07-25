@@ -23,9 +23,10 @@ import {
   type NotePageError,
 } from "../../lib/client/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
-import { convertTiptapToMarkdown } from "../editor/tiptap-editor";
-import { Editor } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
+import {
+  convertTiptapToMarkdown,
+  convertMarkdownToTiptap,
+} from "../editor/tiptap-editor";
 
 // (Model, Action, and update function are unchanged)
 // ...
@@ -101,9 +102,7 @@ const update = (model: Model, action: Action): Model => {
           note: model.note
             ? {
                 ...model.note,
-                content: new NotePage()._convertMarkdownToTiptap(
-                  model.markdownText,
-                ),
+                content: convertMarkdownToTiptap(model.markdownText),
               }
             : null,
           status: "saving",
@@ -150,17 +149,6 @@ export class NotePage extends LitElement {
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
   private _isInitialized = false;
 
-  _convertMarkdownToTiptap(markdown: string): TiptapDoc {
-    const conversionEditor = new Editor({
-      extensions: [StarterKit.configure({ hardBreak: false })],
-      content: markdown,
-    });
-    const jsonContent = conversionEditor.getJSON() as TiptapDoc;
-    conversionEditor.destroy();
-    return jsonContent;
-  }
-
-  // ✅ 3. RESTORED: This method was missing.
   private _handleMarkdownInput = (e: Event) => {
     const markdownText = (e.target as HTMLTextAreaElement).value;
     this.ctrl.propose({
@@ -215,10 +203,8 @@ export class NotePage extends LitElement {
         const marker = listMarkerMatch[1];
         let nextMarker = marker;
 
-        // ✅ 1. ADDED: Safety check for the 'marker' variable.
         if (marker) {
           const numberedListMatch = marker.match(/^(\s*)(\d+)\.\s/);
-          // ✅ 2. ADDED: Safety check for numbered list capture groups.
           if (
             numberedListMatch &&
             numberedListMatch[1] !== undefined &&
