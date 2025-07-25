@@ -26,9 +26,6 @@
 .markdownPreview {
   @apply min-h-[60vh] w-full resize-none rounded-md border border-zinc-200 bg-zinc-50 p-4 font-mono text-sm text-zinc-800 focus:outline-none;
 }
-.header button {
-  @apply text-sm text-zinc-500 hover:text-zinc-800;
-}
 
 .errorText {
   @apply p-8 text-center text-red-500;
@@ -83,4 +80,18 @@
 }
 .noBlocksText {
   @apply text-sm text-zinc-400;
+}
+
+/* --- NEW: Styles for the View Switcher Radio Group --- */
+.viewSwitcherContainer {
+  @apply inline-flex items-center gap-1 rounded-full bg-zinc-100 p-1;
+}
+.viewSwitcherButton {
+  @apply rounded-full px-3 py-1 text-sm font-medium transition-colors disabled:cursor-not-allowed;
+}
+.viewSwitcherButtonActive {
+  @apply bg-white text-zinc-800 shadow-sm;
+}
+.viewSwitcherButton:not(.viewSwitcherButtonActive) {
+  @apply text-zinc-500 hover:text-zinc-700;
 }

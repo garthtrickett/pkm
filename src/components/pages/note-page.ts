@@ -27,6 +27,8 @@ import {
   convertTiptapToMarkdown,
   convertMarkdownToTiptap,
 } from "../editor/tiptap-editor";
+// ✅ FIX: The `classMap` directive is no longer needed.
+// import { classMap } from "lit-html/directives/class-map.js";
 
 // (Model, Action, and update function are unchanged)
 // ...
@@ -57,46 +59,86 @@ type Action =
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
+  // --- DEBUG START ---
+  console.log("[note-page update] Action received:", action.type);
+  // --- DEBUG END ---
+
+  let newModel: Model;
+
   switch (action.type) {
     case "INITIALIZE_START":
-      return {
+      newModel = {
         ...model,
         status: "loading",
         error: null,
         note: null,
         blocks: [],
       };
+      break;
     case "INITIALIZE_ERROR":
-      return { ...model, status: "error", error: action.payload };
+      newModel = { ...model, status: "error", error: action.payload };
+      break;
     case "DATA_UPDATED":
-      if (model.status === "saving") return model;
-      return {
+      if (model.status === "saving") {
+        // --- DEBUG START ---
+        console.log(
+          "[note-page update] SKIPPING DATA_UPDATED because status is 'saving'.",
+        );
+        // --- DEBUG END ---
+        return model;
+      }
+      newModel = {
         ...model,
         note: action.payload.note,
         blocks: action.payload.blocks,
         status: "idle",
         error: null,
       };
+      break;
     case "UPDATE_FIELD":
       if (!model.note) return model;
-      return {
+      newModel = {
         ...model,
         note: { ...model.note, ...action.payload },
         status: "saving",
         error: null,
       };
+      break;
     case "TOGGLE_MARKDOWN_VIEW": {
+      // --- DEBUG START ---
+      console.log(
+        "[note-page update] TOGGLE_MARKDOWN_VIEW triggered. Current isMarkdownView:",
+        model.isMarkdownView,
+      );
+      // --- DEBUG END ---
       const isSwitchingToMarkdown = !model.isMarkdownView;
       if (isSwitchingToMarkdown) {
-        return {
+        // --- DEBUG START ---
+        console.log("[note-page update] Switching TO Markdown view.");
+        console.log(
+          "[note-page update] Tiptap JSON to be converted:",
+          JSON.stringify(model.note?.content, null, 2),
+        );
+        // --- DEBUG END ---
+        const markdownText = model.note
+          ? convertTiptapToMarkdown(model.note.content)
+          : "";
+        // --- DEBUG START ---
+        console.log(
+          "[note-page update] Converted Markdown text:",
+          `"${markdownText}"`,
+        );
+        // --- DEBUG END ---
+        newModel = {
           ...model,
           isMarkdownView: true,
-          markdownText: model.note
-            ? convertTiptapToMarkdown(model.note.content)
-            : "",
+          markdownText,
         };
       } else {
-        return {
+        // --- DEBUG START ---
+        console.log("[note-page update] Switching FROM Markdown view.");
+        // --- DEBUG END ---
+        newModel = {
           ...model,
           isMarkdownView: false,
           note: model.note
@@ -108,16 +150,31 @@ const update = (model: Model, action: Action): Model => {
           status: "saving",
         };
       }
+      break;
     }
     case "UPDATE_MARKDOWN_TEXT":
-      return { ...model, markdownText: action.payload };
+      newModel = { ...model, markdownText: action.payload };
+      break;
     case "SAVE_SUCCESS":
-      return { ...model, status: "idle" };
+      newModel = { ...model, status: "idle" };
+      break;
     case "SAVE_ERROR":
-      return { ...model, status: "error", error: action.payload };
+      newModel = { ...model, status: "error", error: action.payload };
+      break;
     default:
-      return model;
+      newModel = model;
+      break;
   }
+
+  // --- DEBUG START ---
+  console.log("[note-page update] New model state:", {
+    status: newModel.status,
+    isMarkdownView: newModel.isMarkdownView,
+    error: newModel.error,
+  });
+  // --- DEBUG END ---
+
+  return newModel;
 };
 
 @customElement("note-page")
@@ -144,10 +201,10 @@ export class NotePage extends LitElement {
     },
   );
 
+  private _isInitialized = false;
   private _replicacheUnsubscribe: (() => void) | undefined;
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
-  private _isInitialized = false;
 
   private _handleMarkdownInput = (e: Event) => {
     const markdownText = (e.target as HTMLTextAreaElement).value;
@@ -437,7 +494,7 @@ export class NotePage extends LitElement {
   }
 
   override render() {
-    const { note, error, status } = this.ctrl.model;
+    const { note, error, status, isMarkdownView } = this.ctrl.model;
     const getErrorMessage = (e: NotePageError | null): string | null => {
       if (!e) return null;
       switch (e._tag) {
@@ -469,18 +526,49 @@ export class NotePage extends LitElement {
         return html`<span class="text-red-500">${errorMessage}</span>`;
       return "Saved";
     };
+
+    // --- THIS IS THE FIX ---
+    // Instead of using `classMap` with computed properties, we build the
+    // class string directly. This avoids the TypeScript error entirely.
+    const editorClasses = [
+      styles.viewSwitcherButton,
+      !isMarkdownView ? styles.viewSwitcherButtonActive : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const markdownClasses = [
+      styles.viewSwitcherButton,
+      isMarkdownView ? styles.viewSwitcherButtonActive : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    // --- END OF FIX ---
+
     return html`
       <div class=${styles.container}>
         <div class=${styles.editor}>
           <div class=${styles.header}>
             <h2 class=${styles.headerH2}>Edit Note</h2>
             <div class="flex items-center gap-4">
-              <button
-                @click=${() =>
-                  this.ctrl.propose({ type: "TOGGLE_MARKDOWN_VIEW" })}
-              >
-                ${this.ctrl.model.isMarkdownView ? "Editor" : "Markdown"}
-              </button>
+              <div class=${styles.viewSwitcherContainer}>
+                <button
+                  class=${editorClasses}
+                  ?disabled=${!isMarkdownView}
+                  @click=${() =>
+                    this.ctrl.propose({ type: "TOGGLE_MARKDOWN_VIEW" })}
+                >
+                  Editor
+                </button>
+                <button
+                  class=${markdownClasses}
+                  ?disabled=${isMarkdownView}
+                  @click=${() =>
+                    this.ctrl.propose({ type: "TOGGLE_MARKDOWN_VIEW" })}
+                >
+                  Markdown
+                </button>
+              </div>
               <div class=${styles.status}>${renderStatus()}</div>
             </div>
           </div>

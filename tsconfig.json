@@ -21,11 +21,13 @@
     ],
     "types": [
       "bun-types",
+      "vite/client"
     ]
   },
   "include": [
     "**/*.ts",
-    "**/*.tsx"
+    "**/*.tsx",
+    "src/vite-env.d.ts"
   ],
   "exclude": [
     "node_modules"

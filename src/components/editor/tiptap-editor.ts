@@ -1,9 +1,13 @@
 // FILE: ./src/components/editor/tiptap-editor.ts
 import { LitElement, html, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { Editor } from "@tiptap/core";
+import { Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import { generateHTML, generateJSON } from "@tiptap/html";
+import TurndownService from "turndown";
+import { marked } from "marked";
 import { MovableNodes } from "./extensions/MovableNodes";
+import type { TiptapDoc } from "../../lib/shared/schemas";
 
 @customElement("tiptap-editor")
 export class TiptapEditor extends LitElement {
@@ -86,34 +90,50 @@ export class TiptapEditor extends LitElement {
 
 /* MARKDOWN CONVERSION HELPERS */
 
-import { ProseMirrorUnified } from "prosemirror-unified";
-import { MarkdownExtension } from "prosemirror-remark";
-import type { TiptapDoc } from "../../lib/shared/schemas";
+const turndownService = new TurndownService();
+const extensions = [
+  StarterKit.configure({
+    hardBreak: false,
+  }),
+];
 
-// Instantiate the processor once. It can be reused across function calls.
-const pmu = new ProseMirrorUnified([new MarkdownExtension()]);
-
-/**
- * Converts a Tiptap document (ProseMirror JSON) to a Markdown string
- * using the prosemirror-remark library for robust serialization.
- * @param doc The Tiptap document object.
- * @returns A Markdown string representation of the document.
- */
 export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
   if (!doc || !doc.content || doc.content.length === 0) {
     return "";
   }
-  const prosemirrorNode = pmu.schema().nodeFromJSON(doc);
-  return pmu.serialize(prosemirrorNode);
+  try {
+    const mutableDoc = JSON.parse(JSON.stringify(doc)) as JSONContent;
+    const html = generateHTML(mutableDoc, extensions);
+    const markdown = turndownService.turndown(html);
+    return markdown;
+  } catch (error) {
+    console.error(
+      "[convertTiptapToMarkdown] CRITICAL: Failed to convert Tiptap JSON to Markdown via HTML.",
+      error,
+    );
+    return "--- ERROR DURING MARKDOWN CONVERSION ---";
+  }
 };
 
-/**
- * Converts a Markdown string into a Tiptap document (ProseMirror JSON)
- * using the prosemirror-remark library.
- * @param markdown The Markdown string to parse.
- * @returns A Tiptap document object.
- */
 export const convertMarkdownToTiptap = (markdown: string): TiptapDoc => {
-  const prosemirrorNode = pmu.parse(markdown);
-  return prosemirrorNode.toJSON() as TiptapDoc;
+  try {
+    // ✅ FIX: Use the options object to ensure a synchronous return type.
+    const html = marked.parse(markdown, { async: false });
+    const doc = generateJSON(html, extensions) as TiptapDoc;
+    return doc;
+  } catch (error) {
+    console.error(
+      "[convertMarkdownToTiptap] CRITICAL: Failed to parse Markdown string via HTML.",
+      error,
+    );
+    return {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Error parsing Markdown." }],
+        },
+      ],
+    };
+  }
 };
