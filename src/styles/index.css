@@ -1,1 +1,42 @@
 @import "tailwindcss";
+
+/* Custom styles for the Tiptap tag mark */
+.prose span[data-tag-name] {
+  display: inline-block;
+  background-color: #eef2ff; /* A light indigo background */
+  color: #4338ca; /* A darker indigo text */
+  border-radius: 9999px; /* A full pill shape */
+  padding: 2px 8px;
+  font-size: 0.875rem; /* A slightly smaller font size */
+  font-weight: 500;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+/* Add the '#' symbol back visually */
+.prose span[data-tag-name]::before {
+  content: "#";
+}
+
+/* ✅ ADDED: Custom styles for the Tiptap link mark */
+.prose a[data-link-target] {
+  color: #3b82f6; /* Blue-500 */
+  text-decoration: none;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.prose a[data-link-target]:hover {
+  text-decoration: underline;
+}
+
+/* Add the '[[' and ']]' brackets visually */
+.prose a[data-link-target]::before {
+  content: "[[";
+  color: #93c5fd; /* Blue-300 */
+}
+
+.prose a[data-link-target]::after {
+  content: "]]";
+  color: #93c5fd; /* Blue-300 */
+}

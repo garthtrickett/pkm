@@ -12,6 +12,7 @@ import {
   type Block,
   type NoteId,
   type TiptapDoc,
+  type BlockId,
 } from "../../lib/shared/schemas";
 import { authState, type AuthModel } from "../../lib/client/stores/authStore";
 import { ReactiveSamController } from "../../lib/client/reactive-sam-controller";
@@ -20,6 +21,7 @@ import {
   NoteNotFoundError,
   NoteParseError,
   NoteSaveError,
+  NoteTaskUpdateError,
   type NotePageError,
 } from "../../lib/client/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
@@ -27,11 +29,8 @@ import {
   convertTiptapToMarkdown,
   convertMarkdownToTiptap,
 } from "../editor/tiptap-editor";
-// ✅ FIX: The `classMap` directive is no longer needed.
-// import { classMap } from "lit-html/directives/class-map.js";
+import { navigate } from "../../lib/client/router";
 
-// (Model, Action, and update function are unchanged)
-// ...
 // --- Model ---
 type Status = "loading" | "idle" | "saving" | "error";
 interface Model {
@@ -55,14 +54,16 @@ type Action =
   | { type: "UPDATE_MARKDOWN_TEXT"; payload: string }
   | { type: "TOGGLE_MARKDOWN_VIEW" }
   | { type: "SAVE_SUCCESS" }
-  | { type: "SAVE_ERROR"; payload: NoteSaveError };
+  | { type: "SAVE_ERROR"; payload: NoteSaveError }
+  | {
+      type: "UPDATE_TASK_START";
+      payload: { blockId: BlockId; isComplete: boolean };
+    }
+  | { type: "UPDATE_TASK_ERROR"; payload: NoteTaskUpdateError }
+  | { type: "NAVIGATE_TO_NOTE_BY_TITLE"; payload: { title: string } };
 
 // --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
-  // --- DEBUG START ---
-  console.log("[note-page update] Action received:", action.type);
-  // --- DEBUG END ---
-
   let newModel: Model;
 
   switch (action.type) {
@@ -80,11 +81,6 @@ const update = (model: Model, action: Action): Model => {
       break;
     case "DATA_UPDATED":
       if (model.status === "saving") {
-        // --- DEBUG START ---
-        console.log(
-          "[note-page update] SKIPPING DATA_UPDATED because status is 'saving'.",
-        );
-        // --- DEBUG END ---
         return model;
       }
       newModel = {
@@ -105,39 +101,17 @@ const update = (model: Model, action: Action): Model => {
       };
       break;
     case "TOGGLE_MARKDOWN_VIEW": {
-      // --- DEBUG START ---
-      console.log(
-        "[note-page update] TOGGLE_MARKDOWN_VIEW triggered. Current isMarkdownView:",
-        model.isMarkdownView,
-      );
-      // --- DEBUG END ---
       const isSwitchingToMarkdown = !model.isMarkdownView;
       if (isSwitchingToMarkdown) {
-        // --- DEBUG START ---
-        console.log("[note-page update] Switching TO Markdown view.");
-        console.log(
-          "[note-page update] Tiptap JSON to be converted:",
-          JSON.stringify(model.note?.content, null, 2),
-        );
-        // --- DEBUG END ---
         const markdownText = model.note
           ? convertTiptapToMarkdown(model.note.content)
           : "";
-        // --- DEBUG START ---
-        console.log(
-          "[note-page update] Converted Markdown text:",
-          `"${markdownText}"`,
-        );
-        // --- DEBUG END ---
         newModel = {
           ...model,
           isMarkdownView: true,
           markdownText,
         };
       } else {
-        // --- DEBUG START ---
-        console.log("[note-page update] Switching FROM Markdown view.");
-        // --- DEBUG END ---
         newModel = {
           ...model,
           isMarkdownView: false,
@@ -161,20 +135,78 @@ const update = (model: Model, action: Action): Model => {
     case "SAVE_ERROR":
       newModel = { ...model, status: "error", error: action.payload };
       break;
+    case "UPDATE_TASK_START":
+      return { ...model, error: null };
+    case "UPDATE_TASK_ERROR":
+      newModel = { ...model, status: "error", error: action.payload };
+      break;
+    case "NAVIGATE_TO_NOTE_BY_TITLE":
+      return model;
     default:
       newModel = model;
       break;
   }
-
-  // --- DEBUG START ---
-  console.log("[note-page update] New model state:", {
-    status: newModel.status,
-    isMarkdownView: newModel.isMarkdownView,
-    error: newModel.error,
-  });
-  // --- DEBUG END ---
-
   return newModel;
+};
+
+// --- Effectful Action Handler ---
+const handleAction = (
+  action: Action,
+  model: Model,
+): Effect.Effect<
+  void,
+  NotePageError,
+  ReplicacheService | FullClientContext
+> => {
+  switch (action.type) {
+    case "TOGGLE_MARKDOWN_VIEW":
+      if (!model.isMarkdownView) {
+        // This is a placeholder for scheduling save, which will be added later
+      }
+      return Effect.void;
+    case "UPDATE_TASK_START": {
+      return Effect.gen(function* () {
+        const replicache = yield* ReplicacheService;
+        yield* Effect.tryPromise({
+          try: () => replicache.client.mutate.updateTask(action.payload),
+          catch: (cause) => new NoteTaskUpdateError({ cause }),
+        });
+      });
+    }
+    case "NAVIGATE_TO_NOTE_BY_TITLE": {
+      const { title } = action.payload;
+
+      return Effect.gen(function* () {
+        const replicache = yield* ReplicacheService;
+        const noteJsons = yield* Effect.promise(() =>
+          replicache.client.query((tx) =>
+            tx.scan({ prefix: "note/" }).values().toArray(),
+          ),
+        );
+
+        const notes: AppNote[] = noteJsons.flatMap((json) => {
+          const option = Schema.decodeUnknownOption(NoteSchema)(json);
+          return Option.isSome(option) ? [option.value] : [];
+        });
+
+        const targetNote = notes.find((note) => note.title === title);
+
+        if (targetNote) {
+          yield* navigate(`/notes/${targetNote.id}`);
+        } else {
+          yield* Effect.logWarning(
+            `Note with title "${title}" not found for navigation.`,
+          );
+        }
+      }).pipe(
+        Effect.catchAll((error) =>
+          Effect.logError("Navigation effect failed", { error }),
+        ),
+      );
+    }
+    default:
+      return Effect.void;
+  }
 };
 
 @customElement("note-page")
@@ -193,12 +225,14 @@ export class NotePage extends LitElement {
       error: null,
     },
     update,
-    (action, model) => {
-      if (action.type === "TOGGLE_MARKDOWN_VIEW" && !model.isMarkdownView) {
-        this._scheduleSave();
-      }
-      return Effect.void;
-    },
+    (action, model, propose) =>
+      handleAction(action, model).pipe(
+        Effect.catchTag("NoteTaskUpdateError", (err) =>
+          Effect.sync(() =>
+            propose({ type: "UPDATE_TASK_ERROR", payload: err }),
+          ),
+        ),
+      ),
   );
 
   private _isInitialized = false;
@@ -206,87 +240,29 @@ export class NotePage extends LitElement {
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
 
-  private _handleMarkdownInput = (e: Event) => {
-    const markdownText = (e.target as HTMLTextAreaElement).value;
-    this.ctrl.propose({
-      type: "UPDATE_MARKDOWN_TEXT",
-      payload: markdownText,
-    });
-  };
+  private _handleTaskUpdate(
+    e: CustomEvent<{ blockId: BlockId; isComplete: boolean }>,
+  ) {
+    this.ctrl.propose({ type: "UPDATE_TASK_START", payload: e.detail });
+  }
 
-  private _handleMarkdownKeyDown = (e: KeyboardEvent) => {
-    const target = e.target as HTMLTextAreaElement;
-    const { selectionStart, value } = target;
+  private _handleEditorClick = (event: MouseEvent) => {
+    const linkElement = (event.target as HTMLElement).closest(
+      "a[data-link-target]",
+    );
 
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const indent = "  ";
-      let lineStart = selectionStart;
-      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
-        lineStart--;
-      }
-
-      if (e.shiftKey) {
-        // Outdent
-        if (value.substring(lineStart, lineStart + indent.length) === indent) {
-          target.value =
-            value.substring(0, lineStart) +
-            value.substring(lineStart + indent.length);
-          target.selectionStart = target.selectionEnd = Math.max(
-            lineStart,
-            selectionStart - indent.length,
-          );
-        }
-      } else {
-        // Indent
-        target.value =
-          value.substring(0, lineStart) + indent + value.substring(lineStart);
-        target.selectionStart = target.selectionEnd =
-          selectionStart + indent.length;
-      }
-      target.dispatchEvent(
-        new Event("input", { bubbles: true, composed: true }),
-      );
-    } else if (e.key === "Enter") {
-      let lineStart = selectionStart;
-      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
-        lineStart--;
-      }
-      const currentLine = value.substring(lineStart, selectionStart);
-      const listMarkerMatch = currentLine.match(/^(\s*([-*]|\d+\.\s))/);
-
-      if (listMarkerMatch) {
-        e.preventDefault();
-        const marker = listMarkerMatch[1];
-        let nextMarker = marker;
-
-        if (marker) {
-          const numberedListMatch = marker.match(/^(\s*)(\d+)\.\s/);
-          if (
-            numberedListMatch &&
-            numberedListMatch[1] !== undefined &&
-            numberedListMatch[2]
-          ) {
-            const num = parseInt(numberedListMatch[2], 10);
-            nextMarker = `${numberedListMatch[1]}${num + 1}. `;
-          }
-        }
-
-        const textToInsert = "\n" + (nextMarker || "");
-        target.value =
-          value.substring(0, selectionStart) +
-          textToInsert +
-          value.substring(selectionStart);
-        target.selectionStart = target.selectionEnd =
-          selectionStart + textToInsert.length;
-        target.dispatchEvent(
-          new Event("input", { bubbles: true, composed: true }),
-        );
+    if (linkElement) {
+      event.preventDefault();
+      const linkTarget = linkElement.getAttribute("data-link-target");
+      if (linkTarget) {
+        this.ctrl.propose({
+          type: "NAVIGATE_TO_NOTE_BY_TITLE",
+          payload: { title: linkTarget },
+        });
       }
     }
   };
 
-  // ... the rest of the file is unchanged ...
   private _initializeState() {
     this._replicacheUnsubscribe?.();
     this.ctrl.propose({ type: "INITIALIZE_START" });
@@ -489,6 +465,84 @@ export class NotePage extends LitElement {
     this._saveFiber = runClientUnscoped(debouncedSave);
   };
 
+  private _handleMarkdownInput = (e: Event) => {
+    const markdownText = (e.target as HTMLTextAreaElement).value;
+    this.ctrl.propose({
+      type: "UPDATE_MARKDOWN_TEXT",
+      payload: markdownText,
+    });
+  };
+
+  private _handleMarkdownKeyDown = (e: KeyboardEvent) => {
+    const target = e.target as HTMLTextAreaElement;
+    const { selectionStart, value } = target;
+
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const indent = "  ";
+      let lineStart = selectionStart;
+      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
+        lineStart--;
+      }
+
+      if (e.shiftKey) {
+        if (value.substring(lineStart, lineStart + indent.length) === indent) {
+          target.value =
+            value.substring(0, lineStart) +
+            value.substring(lineStart + indent.length);
+          target.selectionStart = target.selectionEnd = Math.max(
+            lineStart,
+            selectionStart - indent.length,
+          );
+        }
+      } else {
+        target.value =
+          value.substring(0, lineStart) + indent + value.substring(lineStart);
+        target.selectionStart = target.selectionEnd =
+          selectionStart + indent.length;
+      }
+      target.dispatchEvent(
+        new Event("input", { bubbles: true, composed: true }),
+      );
+    } else if (e.key === "Enter") {
+      let lineStart = selectionStart;
+      while (lineStart > 0 && value[lineStart - 1] !== "\n") {
+        lineStart--;
+      }
+      const currentLine = value.substring(lineStart, selectionStart);
+      const listMarkerMatch = currentLine.match(/^(\s*([-*]|\d+\.\s))/);
+
+      if (listMarkerMatch) {
+        e.preventDefault();
+        const marker = listMarkerMatch[1];
+        let nextMarker = marker;
+
+        if (marker) {
+          const numberedListMatch = marker.match(/^(\s*)(\d+)\.\s/);
+          if (
+            numberedListMatch &&
+            numberedListMatch[1] !== undefined &&
+            numberedListMatch[2]
+          ) {
+            const num = parseInt(numberedListMatch[2], 10);
+            nextMarker = `${numberedListMatch[1]}${num + 1}. `;
+          }
+        }
+
+        const textToInsert = "\n" + (nextMarker || "");
+        target.value =
+          value.substring(0, selectionStart) +
+          textToInsert +
+          value.substring(selectionStart);
+        target.selectionStart = target.selectionEnd =
+          selectionStart + textToInsert.length;
+        target.dispatchEvent(
+          new Event("input", { bubbles: true, composed: true }),
+        );
+      }
+    }
+  };
+
   protected override createRenderRoot() {
     return this;
   }
@@ -504,6 +558,8 @@ export class NotePage extends LitElement {
           return "There was an error reading the note's data from the local database.";
         case "NoteSaveError":
           return "Failed to save changes. Please check your connection.";
+        case "NoteTaskUpdateError":
+          return "Failed to update task. Please check your connection.";
       }
     };
     const errorMessage = getErrorMessage(error);
@@ -527,9 +583,6 @@ export class NotePage extends LitElement {
       return "Saved";
     };
 
-    // --- THIS IS THE FIX ---
-    // Instead of using `classMap` with computed properties, we build the
-    // class string directly. This avoids the TypeScript error entirely.
     const editorClasses = [
       styles.viewSwitcherButton,
       !isMarkdownView ? styles.viewSwitcherButtonActive : "",
@@ -543,7 +596,6 @@ export class NotePage extends LitElement {
     ]
       .filter(Boolean)
       .join(" ");
-    // --- END OF FIX ---
 
     return html`
       <div class=${styles.container}>
@@ -591,6 +643,8 @@ export class NotePage extends LitElement {
             : html`<tiptap-editor
                 .initialContent=${note.content}
                 @update=${this._handleEditorUpdate}
+                @update-task-status=${this._handleTaskUpdate}
+                @click=${this._handleEditorClick}
               ></tiptap-editor>`}
         </div>
       </div>

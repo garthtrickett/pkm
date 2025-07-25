@@ -5,7 +5,7 @@ import type { UserId } from "../../types/generated/public/User";
 import type { NoteId } from "../shared/schemas";
 import type { NewTask } from "../../types/generated/public/Task";
 
-const TASK_REGEX = /^\s*-\s*\[( |x)\]\s+(.*)/i;
+const TASK_REGEX = /^\s*(-\s*)?\[( |x)\]\s+(.*)/i;
 
 class TaskServiceError extends Data.TaggedError("TaskServiceError")<{
   readonly cause: unknown;
@@ -28,15 +28,11 @@ export const TaskServiceLive = Layer.succeed(
   TaskService.of({
     syncTasksForNote: (noteId, userId) =>
       Effect.gen(function* () {
-        const db = yield* Db; // This 'db' is already a transaction
+        const db = yield* Db;
         yield* Effect.logInfo(
           `[TaskService] Starting sync for noteId: ${noteId}`,
         );
 
-        // --- START OF FIX ---
-        // 1. Atomically delete all tasks associated with this note.
-        // This is safer than fetching IDs first, especially if blocks are deleted.
-        // The subquery correctly handles cases where there are no blocks.
         yield* Effect.tryPromise({
           try: () =>
             db
@@ -44,16 +40,14 @@ export const TaskServiceLive = Layer.succeed(
               .where("source_block_id", "in", (eb) =>
                 eb
                   .selectFrom("block")
-                  .select("block.id") // Be explicit about the table
+                  .select("block.id")
                   .where("note_id", "=", noteId),
               )
               .execute(),
           catch: (cause) => new TaskServiceError({ cause }),
         });
         yield* Effect.logInfo(`[TaskService] Cleared old tasks for note.`);
-        // --- END OF FIX ---
 
-        // 2. Fetch the current blocks to generate new tasks.
         const blocks = yield* Effect.tryPromise({
           try: () =>
             db
@@ -69,15 +63,15 @@ export const TaskServiceLive = Layer.succeed(
         );
 
         if (blocks.length === 0) {
-          return; // Nothing more to do
+          return;
         }
 
         const newTasks: NewTask[] = [];
         for (const block of blocks) {
           const match = block.content.match(TASK_REGEX);
           if (match) {
-            const is_complete = match[1]?.toLowerCase() === "x";
-            const content = match[2] ?? "";
+            const is_complete = match[2]?.toLowerCase() === "x";
+            const content = match[3] ?? "";
 
             newTasks.push({
               user_id: userId,
@@ -89,7 +83,6 @@ export const TaskServiceLive = Layer.succeed(
         }
 
         if (newTasks.length > 0) {
-          // 3. Insert the new tasks we just parsed.
           yield* Effect.tryPromise({
             try: () => db.insertInto("task").values(newTasks).execute(),
             catch: (cause) => new TaskServiceError({ cause }),

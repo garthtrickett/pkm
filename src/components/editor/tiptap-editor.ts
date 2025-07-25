@@ -8,6 +8,10 @@ import TurndownService from "turndown";
 import { marked } from "marked";
 import { MovableNodes } from "./extensions/MovableNodes";
 import type { TiptapDoc } from "../../lib/shared/schemas";
+import { InteractiveNode } from "./extensions/InteractiveNode";
+import { TagMark } from "./extensions/TagMark";
+// ✅ ADDED: Import the new LinkMark extension.
+import { LinkMark } from "./extensions/LinkMark";
 
 @customElement("tiptap-editor")
 export class TiptapEditor extends LitElement {
@@ -28,6 +32,10 @@ export class TiptapEditor extends LitElement {
           hardBreak: false,
         }),
         MovableNodes,
+        InteractiveNode,
+        TagMark,
+        // ✅ ADDED: Add the new mark to the editor's configuration.
+        LinkMark,
       ],
       content: this.initialContent || {
         type: "doc",
@@ -95,6 +103,10 @@ const extensions = [
   StarterKit.configure({
     hardBreak: false,
   }),
+  InteractiveNode,
+  TagMark,
+  // ✅ ADDED: Also include the new mark here for consistent markdown conversion.
+  LinkMark,
 ];
 
 export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
@@ -117,7 +129,6 @@ export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
 
 export const convertMarkdownToTiptap = (markdown: string): TiptapDoc => {
   try {
-    // ✅ FIX: Use the options object to ensure a synchronous return type.
     const html = marked.parse(markdown, { async: false });
     const doc = generateJSON(html, extensions) as TiptapDoc;
     return doc;

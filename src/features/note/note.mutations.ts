@@ -15,7 +15,7 @@ import {
   type TiptapTextNode,
   type TiptapBulletListNode,
   type TiptapListItemNode,
-  type TiptapHeadingNode, // Import the heading node type
+  type TiptapHeadingNode,
 } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
@@ -23,7 +23,10 @@ import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
 import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
 
-// ✅ 1. ADDED: TiptapHeadingNode to the union type.
+const TASK_REGEX = /^\s*(-\s*)?\[( |x)\]\s+(.*)/i;
+const WIKI_LINK_REGEX = /\[\[([^\]]+)\]\]/g;
+const TAG_REGEX = /#(\w+)/g;
+
 type TraversableNode =
   | TiptapParagraphNode
   | TiptapBulletListNode
@@ -65,7 +68,7 @@ const parseContentToBlocks = (
           note_id: noteId,
           user_id: userId,
           parent_id: parentId,
-          type: "text",
+          type: "text", // For now, list items are still basic text
           content: textContent,
           depth,
           order: order++,
@@ -87,27 +90,47 @@ const parseContentToBlocks = (
             depth + 1,
           );
         }
-        // ✅ 2. MODIFIED: This block now handles both paragraphs and headings.
       } else if (node.type === "paragraph" || node.type === "heading") {
         const textContent =
           node.content
             ?.map((t: TiptapTextNode) => t.text)
             .join("")
             .trim() || "";
+
         if (textContent) {
+          const newBlockId = uuidv4() as BlockId;
+          let blockType: "text" | "task" = "text";
+          let fields: Record<string, unknown> = {};
+
+          const taskMatch = textContent.match(TASK_REGEX);
+          if (taskMatch) {
+            blockType = "task";
+            fields = {
+              is_complete: taskMatch[2]?.toLowerCase() === "x",
+              content: taskMatch[3] ?? "",
+            };
+          }
+
+          const tags = [...textContent.matchAll(TAG_REGEX)].flatMap((match) =>
+            match[1] ? [match[1]] : [],
+          );
+          const links = [...textContent.matchAll(WIKI_LINK_REGEX)].flatMap(
+            (match) => (match[1] ? [match[1]] : []),
+          );
+
           parsedBlocks.push({
-            id: uuidv4() as BlockId,
+            id: newBlockId,
             note_id: noteId,
             user_id: userId,
             parent_id: parentId,
-            type: "text",
-            content: textContent,
+            type: blockType,
+            content: textContent, // Store the raw original text
             depth,
             order: order++,
             version: 1,
-            fields: {},
-            tags: [],
-            links: [],
+            fields,
+            tags,
+            links,
             transclusions: [],
             file_path: "",
           });
@@ -119,6 +142,7 @@ const parseContentToBlocks = (
   traverseNodes(contentJSON.content as TraversableNode[], null, 0);
   return parsedBlocks;
 };
+
 export const CreateNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
   userID: UserIdSchema,

@@ -50,12 +50,11 @@ export type ResetPasswordError =
   | InvalidTokenError
   | UnknownAuthError;
 
-// ✅ ADDED: A type union for all possible email verification errors
 export type VerifyEmailError = InvalidTokenError | UnknownAuthError;
 
 // --- User Profile Errors ---
 export class AvatarUploadError extends Data.TaggedError("AvatarUploadError")<{
-  readonly message: string; // Keep message for specific feedback
+  readonly message: string;
   readonly cause?: unknown;
 }> {}
 
@@ -65,6 +64,12 @@ export class NoteParseError extends Data.TaggedError("NoteParseError")<{
   readonly cause: unknown;
 }> {}
 export class NoteSaveError extends Data.TaggedError("NoteSaveError")<{
+  readonly cause: unknown;
+}> {}
+// ✅ ADDED: New error for when a task update fails.
+export class NoteTaskUpdateError extends Data.TaggedError(
+  "NoteTaskUpdateError",
+)<{
   readonly cause: unknown;
 }> {}
 
@@ -77,5 +82,10 @@ export class NoteDeletionError extends Data.TaggedError("NoteDeletionError")<{
 }> {}
 
 // --- Type Unions for Components ---
-export type NotePageError = NoteNotFoundError | NoteParseError | NoteSaveError;
+// ✅ ADDED: New error to the page's error union.
+export type NotePageError =
+  | NoteNotFoundError
+  | NoteParseError
+  | NoteSaveError
+  | NoteTaskUpdateError;
 export type NotesPageError = NoteCreationError | NoteDeletionError;

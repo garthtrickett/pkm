@@ -15,8 +15,9 @@ import type {
   UserId,
   TiptapDoc,
   AppNote,
+  BlockId,
 } from "../shared/schemas";
-import { NoteSchema, TiptapDocSchema } from "../shared/schemas";
+import { NoteSchema, BlockSchema, TiptapDocSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import {
   runClientPromise,
@@ -63,7 +64,6 @@ const mutators = {
       created_at: now,
       updated_at: now,
     };
-
     const jsonCompatibleNote = {
       ...newNote,
       content: Schema.encodeSync(TiptapDocSchema)(newNote.content),
@@ -81,8 +81,6 @@ const mutators = {
     tx: WriteTransaction,
     args: { id: NoteId; title: string; content: TiptapDoc },
   ) => {
-    // [DEBUG] Log arguments received by the mutator
-
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
     if (!noteJSON) {
@@ -110,6 +108,44 @@ const mutators = {
   },
   deleteNote: async (tx: WriteTransaction, { id }: { id: NoteId }) => {
     await tx.del(`note/${id}`);
+  },
+  updateTask: async (
+    tx: WriteTransaction,
+    args: { blockId: BlockId; isComplete: boolean },
+  ) => {
+    const blockKey = `block/${args.blockId}`;
+    const blockJSON = await tx.get(blockKey);
+
+    if (!blockJSON) {
+      console.error(
+        `[updateTask mutator] Block with key ${blockKey} not found.`,
+      );
+      return;
+    }
+
+    const block = Schema.decodeUnknownSync(BlockSchema)(blockJSON);
+
+    const updatedBlock = {
+      ...block,
+      fields: {
+        ...(typeof block.fields === "object" && block.fields !== null
+          ? block.fields
+          : {}),
+        is_complete: args.isComplete,
+      },
+      updated_at: new Date(),
+    };
+
+    const jsonCompatibleUpdate = {
+      ...updatedBlock,
+      created_at: updatedBlock.created_at.toISOString(),
+      updated_at: updatedBlock.updated_at.toISOString(),
+    };
+
+    await tx.set(
+      blockKey,
+      jsonCompatibleUpdate as unknown as ReadonlyJSONValue,
+    );
   },
 };
 export type ReplicacheMutators = typeof mutators;
@@ -155,8 +191,6 @@ const debugPuller: Puller = (
       const pullResponse = Schema.decodeUnknownSync(PullResponseSchema)(
         JSON.parse(responseText),
       );
-      // This explicit cast tells TypeScript that we are correctly returning
-      // a member of the PullerResult union type, resolving the ambiguity.
       return {
         response: pullResponse,
         httpRequestInfo: {
@@ -179,7 +213,7 @@ const debugPuller: Puller = (
       return {
         response: undefined,
         httpRequestInfo: { httpStatusCode, errorMessage },
-      } as PullerResult; // Also cast the error case for consistency.
+      } as PullerResult;
     },
   });
 
