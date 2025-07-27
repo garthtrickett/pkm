@@ -1,13 +1,10 @@
-// FILE: src/components/editor/extensions/InteractiveNode.ts
 import { Node, NodeViewRenderer, textblockTypeInputRule } from "@tiptap/core";
 import type { Node as ProsemirrorNode } from "@tiptap/pm/model";
-// ✅ REMOVED: We no longer need lit or the separate task-node-view component.
-// import { render, html } from "lit";
-// import "../node-views/task-node-view";
+// ✅ 1. IMPORT the UUID generator instead of nanoid.
+import { v4 as uuidv4 } from "uuid";
 
 const TASK_INPUT_REGEX = /^\[\]\s$/;
 
-// ✅ REWRITTEN: The NodeView is now built with vanilla JS to correctly handle content.
 class InteractiveBlockNodeView {
   public dom: HTMLElement;
   public contentDOM: HTMLElement;
@@ -86,7 +83,6 @@ export const InteractiveNode = Node.create({
   name: "interactiveBlock",
   group: "block",
   content: "inline*",
-  // atom: false, // atom should be false when content is allowed. This is the default.
 
   addAttributes() {
     return {
@@ -101,7 +97,6 @@ export const InteractiveNode = Node.create({
   },
 
   renderHTML({ HTMLAttributes }) {
-    // Add data-type for parsing
     return [
       "div",
       { ...HTMLAttributes, "data-interactive-block": "", "data-type": "task" },
@@ -120,11 +115,11 @@ export const InteractiveNode = Node.create({
         find: TASK_INPUT_REGEX,
         type: this.type,
         getAttributes: () => ({
+          // ✅ 2. USE the UUID generator to create a valid ID.
+          blockId: uuidv4(),
           blockType: "task",
           fields: {
             is_complete: false,
-            // The 'content' field is now obsolete for tasks, as the text
-            // is managed by Tiptap's 'content' property.
           },
         }),
       }),

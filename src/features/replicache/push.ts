@@ -9,24 +9,23 @@ import type { Database } from "../../types";
 import type { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
 import type { User } from "../../lib/shared/schemas";
-// ✅ IMPORT: Import mutation handlers and schemas from the new, dedicated file.
 import {
   CreateNoteArgsSchema,
   DeleteNoteArgsSchema,
   UpdateNoteArgsSchema,
+  UpdateTaskArgsSchema, // ✅ ADDED
   handleCreateNote,
   handleDeleteNote,
   handleUpdateNote,
+  handleUpdateTask, // ✅ ADDED
 } from "../note/note.mutations";
 
 class PushTransactionError extends Data.TaggedError("PushTransactionError")<{
   readonly cause: unknown;
 }> {}
 
-// --- Mutation Logic (Now a simple dispatcher) ---
 const applyMutation = (mutation: PushRequest["mutations"][number]) =>
   Effect.gen(function* () {
-    // LOGGING: Log which mutation is about to be applied
     yield* Effect.logInfo(`[push] Applying mutation: ${mutation.name}`, {
       mutationId: mutation.id,
       clientId: mutation.clientID,
@@ -53,6 +52,13 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
         yield* handleDeleteNote(args);
         break;
       }
+      case "updateTask": {
+        const args = yield* Schema.decodeUnknown(UpdateTaskArgsSchema)(
+          mutation.args,
+        );
+        yield* handleUpdateTask(args);
+        break;
+      }
       default:
         yield* Effect.logWarning(`Unknown mutation received: ${mutation.name}`);
     }
@@ -67,7 +73,7 @@ const processMutations = (
     mutations,
     (mutation) =>
       Effect.gen(function* (_) {
-        const trx = yield* _(Db); // Expects a transaction to be provided as the Db service
+        const trx = yield* _(Db);
         const { clientID, id: mutationID } = mutation;
 
         yield* Effect.logInfo(
@@ -125,7 +131,7 @@ const processMutations = (
           yield* Effect.logInfo(
             `[push] Mutation ${mutationID} already processed. Skipping.`,
           );
-          return; // Already processed, continue
+          return;
         }
 
         if (mutationID > expectedMutationID) {
@@ -160,7 +166,7 @@ const processMutations = (
           ),
         );
       }),
-    { concurrency: 1, discard: true }, // Process mutations sequentially
+    { concurrency: 1, discard: true },
   );
 
 export const handlePush = (

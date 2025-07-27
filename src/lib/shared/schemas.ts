@@ -65,7 +65,7 @@ export type TiptapHeadingNode = Schema.Schema.Type<
 export interface TiptapListItemNode {
   readonly type: "listItem";
   readonly content: ReadonlyArray<
-    TiptapParagraphNode | TiptapBulletListNode | TiptapHeadingNode // 👈 ADDED
+    TiptapParagraphNode | TiptapBulletListNode | TiptapHeadingNode
   >;
 }
 
@@ -83,7 +83,7 @@ const TiptapListItemNodeSchema: Schema.Schema<TiptapListItemNode> =
         Schema.Union(
           TiptapParagraphNodeSchema,
           TiptapBulletListNodeSchema,
-          TiptapHeadingNodeSchema, // 👈 ADDED
+          TiptapHeadingNodeSchema,
         ),
       ),
     }),
@@ -97,15 +97,30 @@ const TiptapBulletListNodeSchema: Schema.Schema<TiptapBulletListNode> =
     }),
   );
 
+// ✅ MODIFIED: Added the optional `content` property.
+const InteractiveBlockSchema = Schema.Struct({
+  type: Schema.Literal("interactiveBlock"),
+  attrs: Schema.Struct({
+    blockId: Schema.Union(BlockIdSchema, Schema.Null),
+    blockType: Schema.Literal("task"),
+    fields: Schema.Struct({
+      is_complete: Schema.Boolean,
+    }),
+  }),
+  content: Schema.optional(Schema.Array(TiptapTextNodeSchema)),
+});
+export type InteractiveBlock = Schema.Schema.Type<
+  typeof InteractiveBlockSchema
+>;
+
 // 3. Create a comprehensive, strongly-typed union for any node type.
 export type TiptapNode =
   | TiptapParagraphNode
   | TiptapBulletListNode
   | TiptapListItemNode
   | TiptapTextNode
-  | TiptapHeadingNode;
-
-// --- End of Strengthened Schemas ---
+  | TiptapHeadingNode
+  | InteractiveBlock;
 
 // Describes the top-level document structure from Tiptap
 export const TiptapDocSchema = Schema.Struct({
@@ -116,6 +131,7 @@ export const TiptapDocSchema = Schema.Struct({
         TiptapParagraphNodeSchema,
         TiptapBulletListNodeSchema,
         TiptapHeadingNodeSchema,
+        InteractiveBlockSchema,
       ),
     ),
   ),
@@ -125,7 +141,7 @@ export type TiptapDoc = Schema.Schema.Type<typeof TiptapDocSchema>;
 const ContentSchema = Schema.transform(Schema.Unknown, TiptapDocSchema, {
   strict: true,
   decode: (u) => Schema.decodeUnknownSync(TiptapDocSchema)(u),
-  encode: (t) => Schema.encodeSync(TiptapDocSchema)(t),
+  encode: (t) => Schema.encodeSync(TiptapDocSchema)(t as any),
 });
 
 export const NoteSchema = Schema.Struct({

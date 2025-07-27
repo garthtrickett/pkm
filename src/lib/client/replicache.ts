@@ -5,8 +5,8 @@ import {
   type WriteTransaction,
   type Puller,
   makeIDBName,
-  type PullRequest as ReplicachePullRequest, // Renamed import
-  type PullerResult, // Import PullerResult
+  type PullRequest as ReplicachePullRequest,
+  type PullerResult,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
 import type {
@@ -84,28 +84,86 @@ const mutators = {
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
     if (!noteJSON) {
+      console.error(`[updateNote mutator] Note with key ${noteKey} not found.`);
       return;
     }
 
-    const note = Schema.decodeUnknownSync(NoteSchema)(noteJSON);
+    try {
+      const note = Schema.decodeUnknownSync(NoteSchema)(noteJSON);
 
-    const updatedNote: AppNote = {
-      ...note,
-      title: args.title,
-      content: args.content,
-      version: note.version + 1,
-      updated_at: new Date(),
-    };
+      const updatedNote: AppNote = {
+        ...note,
+        title: args.title,
+        content: args.content,
+        version: note.version + 1,
+        updated_at: new Date(),
+      };
 
-    const jsonCompatibleUpdate = {
-      ...updatedNote,
-      content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content),
-      created_at: updatedNote.created_at.toISOString(),
-      updated_at: updatedNote.updated_at.toISOString(),
-    };
+      const jsonCompatibleUpdate = {
+        ...updatedNote,
+        content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content as any),
+        created_at: updatedNote.created_at.toISOString(),
+        updated_at: updatedNote.updated_at.toISOString(),
+      };
 
-    await tx.set(noteKey, jsonCompatibleUpdate as unknown as ReadonlyJSONValue);
+      // ✅ START OF FIX: Optimistically create/update blocks
+      const now = new Date().toISOString();
+      const interactiveBlocks = (args.content.content ?? []).filter(
+        (node) => node.type === "interactiveBlock",
+      );
+
+      for (const iBlock of interactiveBlocks) {
+        const blockId = iBlock.attrs?.blockId;
+        if (blockId) {
+          const blockKey = `block/${blockId}`;
+          const existingBlockJSON = await tx.get(blockKey);
+
+          if (!existingBlockJSON) {
+            console.log(
+              `[updateNote mutator] Optimistically CREATING block ${blockId}`,
+            );
+            const newBlockValue = {
+              _tag: "block",
+              id: blockId,
+              user_id: note.user_id,
+              note_id: note.id,
+              type: iBlock.attrs.blockType,
+              content: "", // Content is now managed by Tiptap's structure
+              fields: iBlock.attrs.fields,
+              tags: [],
+              links: [],
+              file_path: "",
+              parent_id: null,
+              depth: 0,
+              order: 0,
+              transclusions: [],
+              version: 1,
+              created_at: now,
+              updated_at: now,
+            };
+            await tx.set(blockKey, newBlockValue as ReadonlyJSONValue);
+          }
+        }
+      }
+      // ✅ END OF FIX
+
+      await tx.set(
+        noteKey,
+        jsonCompatibleUpdate as unknown as ReadonlyJSONValue,
+      );
+    } catch (error) {
+      console.error(
+        "🚨 [updateNote mutator] FAILED TO VALIDATE AND SAVE NOTE! Error:",
+        error,
+      );
+      console.error(
+        "🚨 [updateNote mutator] Problematic Tiptap content:",
+        JSON.stringify(args.content, null, 2),
+      );
+      throw error;
+    }
   },
+
   deleteNote: async (tx: WriteTransaction, { id }: { id: NoteId }) => {
     await tx.del(`note/${id}`);
   },
@@ -113,15 +171,32 @@ const mutators = {
     tx: WriteTransaction,
     args: { blockId: BlockId; isComplete: boolean },
   ) => {
+    console.log("[updateTask mutator] Received args:", args);
+
+    if (!args.blockId) {
+      console.error(
+        "[updateTask mutator] 🚨 FATAL: args.blockId is null or undefined. Cannot construct key.",
+      );
+      return;
+    }
+
     const blockKey = `block/${args.blockId}`;
+    console.log(
+      `[updateTask mutator] Attempting to get block with key: "${blockKey}"`,
+    );
+
     const blockJSON = await tx.get(blockKey);
 
     if (!blockJSON) {
       console.error(
-        `[updateTask mutator] Block with key ${blockKey} not found.`,
+        `[updateTask mutator] 🚨 ERROR: Block with key "${blockKey}" not found. The block may have been deleted or the ID is incorrect.`,
       );
       return;
     }
+
+    console.log(
+      `[updateTask mutator] ✅ Successfully found block. Proceeding to update.`,
+    );
 
     const block = Schema.decodeUnknownSync(BlockSchema)(blockJSON);
 
@@ -277,7 +352,6 @@ export const ReplicacheLive = (
         yield* Effect.promise(() => client.close());
       }).pipe(Effect.orDie),
   ).pipe(Effect.map(({ client }) => ({ client })));
-
   return Layer.scoped(ReplicacheService, replicacheServiceEffect).pipe(
     Layer.provide(RpcLogClientSelfContained),
   );

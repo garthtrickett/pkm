@@ -16,6 +16,8 @@ import {
   type TiptapBulletListNode,
   type TiptapListItemNode,
   type TiptapHeadingNode,
+  BlockIdSchema,
+  type InteractiveBlock,
 } from "../../lib/shared/schemas";
 import type { NewNote } from "../../types/generated/public/Note";
 import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
@@ -31,7 +33,8 @@ type TraversableNode =
   | TiptapParagraphNode
   | TiptapBulletListNode
   | TiptapListItemNode
-  | TiptapHeadingNode;
+  | TiptapHeadingNode
+  | InteractiveBlock;
 
 const parseContentToBlocks = (
   noteId: NoteId,
@@ -49,7 +52,32 @@ const parseContentToBlocks = (
 
     let order = 0;
     for (const node of nodes) {
-      if (node.type === "bulletList" && node.content) {
+      if (node.type === "interactiveBlock") {
+        const blockId = node.attrs.blockId as BlockId;
+        // ✅ MODIFIED: Correctly access the content from the node.
+        const textContent =
+          node.content
+            ?.map((t) => t.text)
+            .join("")
+            .trim() ?? "";
+
+        parsedBlocks.push({
+          id: blockId,
+          note_id: noteId,
+          user_id: userId,
+          parent_id: parentId,
+          type: node.attrs.blockType,
+          content: textContent,
+          depth,
+          order: order++,
+          version: 1,
+          fields: node.attrs.fields,
+          tags: [],
+          links: [],
+          transclusions: [],
+          file_path: "",
+        });
+      } else if (node.type === "bulletList" && node.content) {
         traverseNodes(node.content as TraversableNode[], parentId, depth);
       } else if (node.type === "listItem" && node.content) {
         const newBlockId = uuidv4() as BlockId;
@@ -68,7 +96,7 @@ const parseContentToBlocks = (
           note_id: noteId,
           user_id: userId,
           parent_id: parentId,
-          type: "text", // For now, list items are still basic text
+          type: "text",
           content: textContent,
           depth,
           order: order++,
@@ -124,7 +152,7 @@ const parseContentToBlocks = (
             user_id: userId,
             parent_id: parentId,
             type: blockType,
-            content: textContent, // Store the raw original text
+            content: textContent,
             depth,
             order: order++,
             version: 1,
@@ -161,6 +189,12 @@ export const DeleteNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
 });
 export type DeleteNoteArgs = Schema.Schema.Type<typeof DeleteNoteArgsSchema>;
+
+export const UpdateTaskArgsSchema = Schema.Struct({
+  blockId: BlockIdSchema,
+  isComplete: Schema.Boolean,
+});
+export type UpdateTaskArgs = Schema.Schema.Type<typeof UpdateTaskArgsSchema>;
 
 export const handleCreateNote = (
   args: CreateNoteArgs,
@@ -253,6 +287,44 @@ export const handleDeleteNote = (
       db
         .deleteFrom("note")
         .where("id", "=", args.id)
+        .where("user_id", "=", user!.id)
+        .execute(),
+    );
+  });
+
+export const handleUpdateTask = (
+  args: UpdateTaskArgs,
+): Effect.Effect<void, Error, Db | Auth> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const { user } = yield* Auth;
+
+    yield* Effect.logInfo(
+      `[handleUpdateTask] Updating task status for blockId: ${args.blockId}`,
+    );
+
+    yield* Effect.promise(() =>
+      db
+        .updateTable("task")
+        .set({
+          is_complete: args.isComplete,
+          updated_at: new Date(),
+        })
+        .where("source_block_id", "=", args.blockId)
+        .where("user_id", "=", user!.id)
+        .execute(),
+    );
+
+    yield* Effect.promise(() =>
+      db
+        .updateTable("block")
+        .set({
+          fields: sql`fields || ${JSON.stringify({
+            is_complete: args.isComplete,
+          })}::jsonb`,
+          updated_at: new Date(),
+        })
+        .where("id", "=", args.blockId)
         .where("user_id", "=", user!.id)
         .execute(),
     );
