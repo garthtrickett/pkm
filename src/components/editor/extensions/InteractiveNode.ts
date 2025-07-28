@@ -25,6 +25,9 @@ class InteractiveBlockNodeView {
     private getPos: () => number | undefined,
   ) {
     // --- DEBUG LOG ---
+    console.log(
+      `[NodeView CONSTRUCTOR] Creating view for blockId: ${this.node.attrs.blockId}`,
+    );
 
     this.dom = document.createElement("div");
     this.dom.draggable = true;
@@ -34,7 +37,6 @@ class InteractiveBlockNodeView {
       "items-center",
       "gap-2",
       "py-1",
-      "px-2",
       "group",
     );
     this.dom.addEventListener("dragstart", this.handleDragStart);
@@ -44,6 +46,7 @@ class InteractiveBlockNodeView {
     dragHandleWrapper.classList.add(
       "group", // Renamed the outer div to not be the group for hover
       "cursor-grab",
+      "px-2", // Use horizontal padding only
       "flex",
       "items-center",
       "select-none",
@@ -82,6 +85,9 @@ class InteractiveBlockNodeView {
 
   private handleDragStart = (event: DragEvent) => {
     // --- DEBUG LOG ---
+    console.log(
+      `[NodeView DRAG_START] Fired for blockId: ${this.node.attrs.blockId}. Dispatching to main editor view.`,
+    );
     this.view.dom.dispatchEvent(new DragEvent("dragstart", event));
   };
 
@@ -99,6 +105,14 @@ class InteractiveBlockNodeView {
   };
 
   update(node: ProsemirrorNode): boolean {
+    // --- DEBUG LOG ---
+    console.log(
+      `[NodeView UPDATE] Update called for blockId: ${this.node.attrs.blockId}`,
+    );
+    if (node.type.name !== this.node.type.name) {
+      console.warn(`[NodeView UPDATE] Node type mismatch. Cannot update.`);
+      return false;
+    }
     this.node = node;
     this.checkbox.checked = this.node.attrs.fields.is_complete;
     return true;
@@ -106,6 +120,9 @@ class InteractiveBlockNodeView {
 
   destroy() {
     // --- DEBUG LOG ---
+    console.log(
+      `[NodeView DESTROY] Destroying view for blockId: ${this.node.attrs.blockId}`,
+    );
     this.checkbox.removeEventListener("change", this.handleCheckboxChange);
     this.dom.removeEventListener("dragstart", this.handleDragStart);
   }
@@ -158,6 +175,41 @@ export const InteractiveNode = Node.create({
     ];
   },
 
+  addKeyboardShortcuts() {
+    return {
+      Enter: () => {
+        const { state, commands } = this.editor;
+        const { selection } = state;
+        const { $from, empty } = selection;
+
+        // Check if cursor is at the very end of the node
+        if (!empty || $from.parent.content.size !== $from.parentOffset) {
+          return false;
+        }
+
+        // Check if the current node is our interactive task block
+        if ($from.parent.type.name !== this.type.name) {
+          return false;
+        }
+
+        // If the current task block is empty, pressing enter should turn it into a paragraph
+        if ($from.parent.content.size === 0) {
+          return commands.clearNodes().insertContent("<p></p>");
+        }
+
+        // Otherwise, insert a new task block after the current one
+        return commands.insertContentAt($from.after(), {
+          type: this.type.name,
+          attrs: {
+            blockId: uuidv4(),
+            blockType: "task",
+            fields: { is_complete: false },
+          },
+        });
+      },
+    };
+  },
+
   addProseMirrorPlugins() {
     return [
       new Plugin({
@@ -171,6 +223,11 @@ export const InteractiveNode = Node.create({
             return null;
           }
 
+          console.log(
+            "[DropPlugin] Detected 'drop' transaction.",
+            dropTransaction,
+          );
+
           let dropPos = -1;
           let droppedNode: ProsemirrorNode | null = null;
 
@@ -182,26 +239,29 @@ export const InteractiveNode = Node.create({
             ) {
               dropPos = step.from;
               droppedNode = step.slice.content.firstChild;
+              console.log(
+                `[DropPlugin] Found ReplaceStep for interactive node at position: ${dropPos}`,
+              );
               break;
             }
           }
 
           if (dropPos !== -1 && droppedNode) {
-            // --- THIS IS THE FIX ---
-
-            // 2. Instead of a NodeSelection, calculate the position for a TextSelection
-            //    at the end of the content within the dropped node.
-            //    `dropPos` is the start of the node.
-            //    `+ 1` moves inside the node.
-            //    `+ droppedNode.content.size` moves to the end of the node's content.
             const endOfNodeContentPos = dropPos + 1 + droppedNode.content.size;
 
-            // 3. Create and return a new transaction that sets a TextSelection.
-            //    This places the cursor naturally and avoids the stale "NodeSelection" state.
+            console.log(
+              `[DropPlugin] Drop position is ${dropPos}. Setting new TextSelection at end of content: ${endOfNodeContentPos}.`,
+            );
+
             return newState.tr.setSelection(
               TextSelection.create(newState.doc, endOfNodeContentPos),
             );
+          } else {
+            console.warn(
+              "[DropPlugin] Drop transaction occurred, but a valid drop position or node was not found.",
+            );
           }
+
           return null;
         },
       }),

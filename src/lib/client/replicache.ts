@@ -135,7 +135,7 @@ const mutators = {
         // 4. Determine which blocks are new and need to be created.
         const blocksToCreate = interactiveBlocks.filter(
           (b) =>
-            b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId as BlockId),
+            b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId),
         );
 
         if (blocksToCreate.length > 0) {
