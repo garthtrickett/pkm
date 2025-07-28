@@ -59,8 +59,10 @@ const moveNode = (
     if (dispatch) {
       tr.delete(currentPos, currentPos + nodeSize);
       tr.insert(targetPos, node);
-      const newSelectionPos = tr.mapping.map(currentPos);
-      tr.setSelection(TextSelection.create(tr.doc, newSelectionPos + 1));
+
+      const resolvedPos = tr.doc.resolve(tr.mapping.map(targetPos) - nodeSize);
+      tr.setSelection(TextSelection.near(resolvedPos));
+
       dispatch(tr.scrollIntoView());
     }
 

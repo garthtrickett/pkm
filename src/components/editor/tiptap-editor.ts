@@ -10,7 +10,6 @@ import { MovableNodes } from "./extensions/MovableNodes";
 import type { TiptapDoc } from "../../lib/shared/schemas";
 import { InteractiveNode } from "./extensions/InteractiveNode";
 import { TagMark } from "./extensions/TagMark";
-// ✅ ADDED: Import the new LinkMark extension.
 import { LinkMark } from "./extensions/LinkMark";
 
 @customElement("tiptap-editor")
@@ -19,6 +18,8 @@ export class TiptapEditor extends LitElement {
   initialContent: string | object = "";
 
   private editor?: Editor;
+  // ✅ 1. ADD a flag to break the reactive feedback loop.
+  private isInternallyUpdating = false;
 
   public getContent() {
     return this.editor?.getJSON();
@@ -34,7 +35,6 @@ export class TiptapEditor extends LitElement {
         MovableNodes,
         InteractiveNode,
         TagMark,
-        // ✅ ADDED: Add the new mark to the editor's configuration.
         LinkMark,
       ],
       content: this.initialContent || {
@@ -57,6 +57,8 @@ export class TiptapEditor extends LitElement {
         },
       },
       onUpdate: ({ editor }) => {
+        // ✅ 2. SET the flag before dispatching the update.
+        this.isInternallyUpdating = true;
         this.dispatchEvent(
           new CustomEvent("update", {
             detail: {
@@ -64,12 +66,22 @@ export class TiptapEditor extends LitElement {
             },
           }),
         );
+        // ✅ 3. RESET the flag asynchronously after this update cycle.
+        Promise.resolve().then(() => {
+          this.isInternallyUpdating = false;
+        });
       },
     });
   }
 
   override updated(changedProperties: PropertyValues<this>) {
     if (changedProperties.has("initialContent") && this.editor) {
+      // ✅ 4. CHECK the flag. If the update came from the editor itself,
+      // do not overwrite its state.
+      if (this.isInternallyUpdating) {
+        return;
+      }
+
       const isSame =
         JSON.stringify(this.editor.getJSON()) ===
         JSON.stringify(this.initialContent);
@@ -105,7 +117,6 @@ const extensions = [
   }),
   InteractiveNode,
   TagMark,
-  // ✅ ADDED: Also include the new mark here for consistent markdown conversion.
   LinkMark,
 ];
 

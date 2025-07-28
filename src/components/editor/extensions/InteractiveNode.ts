@@ -1,6 +1,13 @@
+// FILE: ./src/components/editor/extensions/InteractiveNode.ts
 import { Node, NodeViewRenderer, textblockTypeInputRule } from "@tiptap/core";
 import type { Node as ProsemirrorNode } from "@tiptap/pm/model";
-// ✅ 1. IMPORT the UUID generator instead of nanoid.
+import {
+  Plugin,
+  PluginKey,
+  NodeSelection,
+  Transaction,
+} from "@tiptap/pm/state";
+import { Step, ReplaceStep } from "@tiptap/pm/transform";
 import { v4 as uuidv4 } from "uuid";
 
 const TASK_INPUT_REGEX = /^\[\]\s$/;
@@ -9,23 +16,37 @@ class InteractiveBlockNodeView {
   public dom: HTMLElement;
   public contentDOM: HTMLElement;
   private checkbox: HTMLInputElement;
+  private dragHandle: HTMLElement;
 
   constructor(
     private node: ProsemirrorNode,
     private view: any,
     private getPos: () => number | undefined,
   ) {
-    // The main container for the node view
     this.dom = document.createElement("div");
+    this.dom.draggable = true;
     this.dom.classList.add(
       "task-node-view",
       "flex",
       "items-start",
       "gap-2",
       "py-1",
+      "group",
+      "cursor-grab",
+      "select-none",
     );
+    this.dom.addEventListener("dragstart", this.handleDragStart);
 
-    // The checkbox element (the "chrome")
+    this.dragHandle = document.createElement("div");
+    this.dragHandle.classList.add(
+      "flex-shrink-0",
+      "opacity-0",
+      "group-hover:opacity-50",
+      "transition-opacity",
+      "mt-1",
+    );
+    this.dragHandle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle></svg>`;
+
     this.checkbox = document.createElement("input");
     this.checkbox.type = "checkbox";
     this.checkbox.checked = this.node.attrs.fields.is_complete;
@@ -42,14 +63,16 @@ class InteractiveBlockNodeView {
     );
     this.checkbox.addEventListener("change", this.handleCheckboxChange);
 
-    // The container for the editable content
     this.contentDOM = document.createElement("div");
     this.contentDOM.classList.add("flex-1");
 
-    this.dom.append(this.checkbox, this.contentDOM);
+    this.dom.append(this.dragHandle, this.checkbox, this.contentDOM);
   }
 
-  // Dispatch the custom event when the checkbox is clicked
+  private handleDragStart = (event: DragEvent) => {
+    this.view.dom.dispatchEvent(new DragEvent("dragstart", event));
+  };
+
   private handleCheckboxChange = () => {
     this.dom.dispatchEvent(
       new CustomEvent("update-task-status", {
@@ -63,7 +86,6 @@ class InteractiveBlockNodeView {
     );
   };
 
-  // Update the checkbox if the node's data changes from an external source
   update(node: ProsemirrorNode): boolean {
     if (node.type.name !== this.node.type.name) {
       return false;
@@ -73,9 +95,9 @@ class InteractiveBlockNodeView {
     return true;
   }
 
-  // Clean up the event listener
   destroy() {
     this.checkbox.removeEventListener("change", this.handleCheckboxChange);
+    this.dom.removeEventListener("dragstart", this.handleDragStart);
   }
 }
 
@@ -83,6 +105,8 @@ export const InteractiveNode = Node.create({
   name: "interactiveBlock",
   group: "block",
   content: "inline*",
+  atom: true,
+  draggable: true,
 
   addAttributes() {
     return {
@@ -115,13 +139,50 @@ export const InteractiveNode = Node.create({
         find: TASK_INPUT_REGEX,
         type: this.type,
         getAttributes: () => ({
-          // ✅ 2. USE the UUID generator to create a valid ID.
           blockId: uuidv4(),
           blockType: "task",
           fields: {
             is_complete: false,
           },
         }),
+      }),
+    ];
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey("interactiveNodeDropHandler"),
+        appendTransaction: (transactions, _oldState, newState) => {
+          let dropPos = -1;
+
+          const dropTransaction = transactions.find(
+            (tr) => tr.getMeta("uiEvent") === "drop" && tr.docChanged,
+          );
+
+          if (!dropTransaction) {
+            return null;
+          }
+
+          for (const step of dropTransaction.steps as Step[]) {
+            if (
+              step instanceof ReplaceStep &&
+              step.slice.size > 0 &&
+              step.slice.content.firstChild?.type.name === this.type.name
+            ) {
+              dropPos = step.from;
+              break;
+            }
+          }
+
+          if (dropPos !== -1) {
+            return newState.tr.setSelection(
+              NodeSelection.create(newState.doc, dropPos),
+            );
+          }
+
+          return null;
+        },
       }),
     ];
   },

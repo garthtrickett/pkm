@@ -106,29 +106,56 @@ const mutators = {
         updated_at: updatedNote.updated_at.toISOString(),
       };
 
-      // ✅ START OF FIX: Optimistically create/update blocks
-      const now = new Date().toISOString();
+      // --- START OF REFACTORED BLOCK SYNC LOGIC ---
       const interactiveBlocks = (args.content.content ?? []).filter(
         (node) => node.type === "interactiveBlock",
       );
 
-      for (const iBlock of interactiveBlocks) {
-        const blockId = iBlock.attrs?.blockId;
-        if (blockId) {
-          const blockKey = `block/${blockId}`;
-          const existingBlockJSON = await tx.get(blockKey);
+      const blockIdsInContent = interactiveBlocks
+        .map((b) => b.attrs?.blockId as BlockId)
+        .filter(Boolean);
 
-          if (!existingBlockJSON) {
-            console.log(
-              `[updateNote mutator] Optimistically CREATING block ${blockId}`,
-            );
+      if (blockIdsInContent.length > 0) {
+        // ✅ THIS IS THE FIX ✅
+        // 2. Efficiently check which blocks exist by running get() calls in parallel.
+        const existingBlocks = new Set<BlockId>();
+        const existenceChecks = blockIdsInContent.map((id) =>
+          tx.get(`block/${id}`),
+        );
+        const results = await Promise.all(existenceChecks);
+
+        // 3. Populate the set of existing blocks based on the results.
+        results.forEach((value, index) => {
+          if (value) {
+            // If a value was returned, the block exists.
+            existingBlocks.add(blockIdsInContent[index]!);
+          }
+        });
+
+        // 4. Determine which blocks are new and need to be created.
+        const blocksToCreate = interactiveBlocks.filter(
+          (b) =>
+            b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId as BlockId),
+        );
+
+        if (blocksToCreate.length > 0) {
+          console.log(
+            `[updateNote mutator] Optimistically CREATING ${
+              blocksToCreate.length
+            } new block(s): ${blocksToCreate
+              .map((b) => b.attrs.blockId)
+              .join(", ")}`,
+          );
+          const now = new Date().toISOString();
+          for (const iBlock of blocksToCreate) {
+            const blockId = iBlock.attrs.blockId as BlockId;
             const newBlockValue = {
               _tag: "block",
               id: blockId,
               user_id: note.user_id,
               note_id: note.id,
               type: iBlock.attrs.blockType,
-              content: "", // Content is now managed by Tiptap's structure
+              content: "",
               fields: iBlock.attrs.fields,
               tags: [],
               links: [],
@@ -141,11 +168,14 @@ const mutators = {
               created_at: now,
               updated_at: now,
             };
-            await tx.set(blockKey, newBlockValue as ReadonlyJSONValue);
+            await tx.set(
+              `block/${blockId}`,
+              newBlockValue as ReadonlyJSONValue,
+            );
           }
         }
       }
-      // ✅ END OF FIX
+      // --- END OF REFACTORED BLOCK SYNC LOGIC ---
 
       await tx.set(
         noteKey,
