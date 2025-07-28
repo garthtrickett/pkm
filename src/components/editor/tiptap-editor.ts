@@ -18,7 +18,6 @@ export class TiptapEditor extends LitElement {
   initialContent: string | object = "";
 
   private editor?: Editor;
-  // ✅ 1. ADD a flag to break the reactive feedback loop.
   private isInternallyUpdating = false;
 
   public getContent() {
@@ -57,7 +56,10 @@ export class TiptapEditor extends LitElement {
         },
       },
       onUpdate: ({ editor }) => {
-        // ✅ 2. SET the flag before dispatching the update.
+        // --- DEBUG LOG ---
+        console.log(
+          "[TiptapEditor onUpdate] Editor content changed. Setting isInternallyUpdating = true and dispatching 'update' event.",
+        );
         this.isInternallyUpdating = true;
         this.dispatchEvent(
           new CustomEvent("update", {
@@ -66,8 +68,11 @@ export class TiptapEditor extends LitElement {
             },
           }),
         );
-        // ✅ 3. RESET the flag asynchronously after this update cycle.
         Promise.resolve().then(() => {
+          // --- DEBUG LOG ---
+          console.log(
+            "[TiptapEditor onUpdate] Resetting isInternallyUpdating = false.",
+          );
           this.isInternallyUpdating = false;
         });
       },
@@ -76,9 +81,16 @@ export class TiptapEditor extends LitElement {
 
   override updated(changedProperties: PropertyValues<this>) {
     if (changedProperties.has("initialContent") && this.editor) {
-      // ✅ 4. CHECK the flag. If the update came from the editor itself,
-      // do not overwrite its state.
+      // --- DEBUG LOG ---
+      console.log(
+        `[TiptapEditor updated] 'initialContent' property changed. isInternallyUpdating: ${this.isInternallyUpdating}`,
+      );
+
       if (this.isInternallyUpdating) {
+        // --- DEBUG LOG ---
+        console.log(
+          "[TiptapEditor updated] Update was internal. Bypassing setContent to prevent feedback loop.",
+        );
         return;
       }
 
@@ -87,9 +99,18 @@ export class TiptapEditor extends LitElement {
         JSON.stringify(this.initialContent);
 
       if (!isSame) {
+        // --- DEBUG LOG ---
+        console.log(
+          "[TiptapEditor updated] External content is different. Calling editor.commands.setContent().",
+        );
         this.editor.commands.setContent(this.initialContent, {
           emitUpdate: false,
         });
+      } else {
+        // --- DEBUG LOG ---
+        console.log(
+          "[TiptapEditor updated] External content is the same. No-op.",
+        );
       }
     }
   }

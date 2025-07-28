@@ -6,6 +6,7 @@ import {
   PluginKey,
   NodeSelection,
   Transaction,
+  TextSelection, // ✅ 1. IMPORT TextSelection
 } from "@tiptap/pm/state";
 import { Step, ReplaceStep } from "@tiptap/pm/transform";
 import { v4 as uuidv4 } from "uuid";
@@ -23,6 +24,11 @@ class InteractiveBlockNodeView {
     private view: any,
     private getPos: () => number | undefined,
   ) {
+    // --- DEBUG LOG ---
+    console.log(
+      `[NodeView CONSTRUCTOR] Creating view for blockId: ${this.node.attrs.blockId}`,
+    );
+
     this.dom = document.createElement("div");
     this.dom.draggable = true;
     this.dom.classList.add(
@@ -70,6 +76,10 @@ class InteractiveBlockNodeView {
   }
 
   private handleDragStart = (event: DragEvent) => {
+    // --- DEBUG LOG ---
+    console.log(
+      `[NodeView DRAG_START] Fired for blockId: ${this.node.attrs.blockId}. Dispatching to main editor view.`,
+    );
     this.view.dom.dispatchEvent(new DragEvent("dragstart", event));
   };
 
@@ -87,7 +97,12 @@ class InteractiveBlockNodeView {
   };
 
   update(node: ProsemirrorNode): boolean {
+    // --- DEBUG LOG ---
+    console.log(
+      `[NodeView UPDATE] Update called for blockId: ${this.node.attrs.blockId}`,
+    );
     if (node.type.name !== this.node.type.name) {
+      console.warn(`[NodeView UPDATE] Node type mismatch. Cannot update.`);
       return false;
     }
     this.node = node;
@@ -96,6 +111,10 @@ class InteractiveBlockNodeView {
   }
 
   destroy() {
+    // --- DEBUG LOG ---
+    console.log(
+      `[NodeView DESTROY] Destroying view for blockId: ${this.node.attrs.blockId}`,
+    );
     this.checkbox.removeEventListener("change", this.handleCheckboxChange);
     this.dom.removeEventListener("dragstart", this.handleDragStart);
   }
@@ -154,8 +173,6 @@ export const InteractiveNode = Node.create({
       new Plugin({
         key: new PluginKey("interactiveNodeDropHandler"),
         appendTransaction: (transactions, _oldState, newState) => {
-          let dropPos = -1;
-
           const dropTransaction = transactions.find(
             (tr) => tr.getMeta("uiEvent") === "drop" && tr.docChanged,
           );
@@ -164,6 +181,14 @@ export const InteractiveNode = Node.create({
             return null;
           }
 
+          console.log(
+            "[DropPlugin] Detected 'drop' transaction.",
+            dropTransaction,
+          );
+
+          let dropPos = -1;
+          let droppedNode: ProsemirrorNode | null = null;
+
           for (const step of dropTransaction.steps as Step[]) {
             if (
               step instanceof ReplaceStep &&
@@ -171,13 +196,36 @@ export const InteractiveNode = Node.create({
               step.slice.content.firstChild?.type.name === this.type.name
             ) {
               dropPos = step.from;
+              droppedNode = step.slice.content.firstChild;
+              console.log(
+                `[DropPlugin] Found ReplaceStep for interactive node at position: ${dropPos}`,
+              );
               break;
             }
           }
 
-          if (dropPos !== -1) {
+          if (dropPos !== -1 && droppedNode) {
+            // --- THIS IS THE FIX ---
+
+            // 2. Instead of a NodeSelection, calculate the position for a TextSelection
+            //    at the end of the content within the dropped node.
+            //    `dropPos` is the start of the node.
+            //    `+ 1` moves inside the node.
+            //    `+ droppedNode.content.size` moves to the end of the node's content.
+            const endOfNodeContentPos = dropPos + 1 + droppedNode.content.size;
+
+            console.log(
+              `[DropPlugin] Drop position is ${dropPos}. Setting new TextSelection at end of content: ${endOfNodeContentPos}.`,
+            );
+
+            // 3. Create and return a new transaction that sets a TextSelection.
+            //    This places the cursor naturally and avoids the stale "NodeSelection" state.
             return newState.tr.setSelection(
-              NodeSelection.create(newState.doc, dropPos),
+              TextSelection.create(newState.doc, endOfNodeContentPos),
+            );
+          } else {
+            console.warn(
+              "[DropPlugin] Drop transaction occurred, but a valid drop position or node was not found.",
             );
           }
 
