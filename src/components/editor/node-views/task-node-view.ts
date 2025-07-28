@@ -44,9 +44,9 @@ export class TaskNodeView extends LitElement {
           class="h-4 w-4 flex-shrink-0 cursor-pointer rounded border-zinc-300 text-zinc-600 focus:ring-zinc-500"
         />
         <span
-          class="flex-1 ${this.isComplete
+          class="${this.isComplete
             ? "text-zinc-400 line-through"
-            : "text-zinc-800"}"
+            : "text-zinc-800"} flex-1"
           >${this.content}</span
         >
       </div>

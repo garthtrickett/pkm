@@ -1,4 +1,4 @@
-// FILE: ./src/components/editor/extensions/InteractiveNode.ts
+// FILE: src/components/editor/extensions/InteractiveNode.ts
 import { Node, NodeViewRenderer, textblockTypeInputRule } from "@tiptap/core";
 import type { Node as ProsemirrorNode } from "@tiptap/pm/model";
 import {
@@ -6,7 +6,7 @@ import {
   PluginKey,
   NodeSelection,
   Transaction,
-  TextSelection, // ✅ 1. IMPORT TextSelection
+  TextSelection,
 } from "@tiptap/pm/state";
 import { Step, ReplaceStep } from "@tiptap/pm/transform";
 import { v4 as uuidv4 } from "uuid";
@@ -25,31 +25,36 @@ class InteractiveBlockNodeView {
     private getPos: () => number | undefined,
   ) {
     // --- DEBUG LOG ---
-    console.log(
-      `[NodeView CONSTRUCTOR] Creating view for blockId: ${this.node.attrs.blockId}`,
-    );
 
     this.dom = document.createElement("div");
     this.dom.draggable = true;
     this.dom.classList.add(
       "task-node-view",
       "flex",
-      "items-start",
+      "items-center",
       "gap-2",
       "py-1",
+      "px-2",
       "group",
-      "cursor-grab",
-      "select-none",
     );
     this.dom.addEventListener("dragstart", this.handleDragStart);
 
-    this.dragHandle = document.createElement("div");
+    // This wrapper creates a larger, invisible grab area around the handle.
+    const dragHandleWrapper = document.createElement("div");
+    dragHandleWrapper.classList.add(
+      "group", // Renamed the outer div to not be the group for hover
+      "cursor-grab",
+      "flex",
+      "items-center",
+      "select-none",
+    );
+
+    this.dragHandle = document.createElement("div"); // The visible handle icon
     this.dragHandle.classList.add(
       "flex-shrink-0",
       "opacity-0",
-      "group-hover:opacity-50",
+      "group-hover:opacity-50", // Now responds to hover on the wrapper
       "transition-opacity",
-      "mt-1",
     );
     this.dragHandle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle></svg>`;
 
@@ -65,21 +70,18 @@ class InteractiveBlockNodeView {
       "border-zinc-300",
       "text-zinc-600",
       "focus:ring-zinc-500",
-      "mt-1",
     );
     this.checkbox.addEventListener("change", this.handleCheckboxChange);
 
     this.contentDOM = document.createElement("div");
     this.contentDOM.classList.add("flex-1");
 
-    this.dom.append(this.dragHandle, this.checkbox, this.contentDOM);
+    dragHandleWrapper.appendChild(this.dragHandle);
+    this.dom.append(dragHandleWrapper, this.checkbox, this.contentDOM);
   }
 
   private handleDragStart = (event: DragEvent) => {
     // --- DEBUG LOG ---
-    console.log(
-      `[NodeView DRAG_START] Fired for blockId: ${this.node.attrs.blockId}. Dispatching to main editor view.`,
-    );
     this.view.dom.dispatchEvent(new DragEvent("dragstart", event));
   };
 
@@ -97,14 +99,6 @@ class InteractiveBlockNodeView {
   };
 
   update(node: ProsemirrorNode): boolean {
-    // --- DEBUG LOG ---
-    console.log(
-      `[NodeView UPDATE] Update called for blockId: ${this.node.attrs.blockId}`,
-    );
-    if (node.type.name !== this.node.type.name) {
-      console.warn(`[NodeView UPDATE] Node type mismatch. Cannot update.`);
-      return false;
-    }
     this.node = node;
     this.checkbox.checked = this.node.attrs.fields.is_complete;
     return true;
@@ -112,9 +106,6 @@ class InteractiveBlockNodeView {
 
   destroy() {
     // --- DEBUG LOG ---
-    console.log(
-      `[NodeView DESTROY] Destroying view for blockId: ${this.node.attrs.blockId}`,
-    );
     this.checkbox.removeEventListener("change", this.handleCheckboxChange);
     this.dom.removeEventListener("dragstart", this.handleDragStart);
   }
@@ -124,7 +115,6 @@ export const InteractiveNode = Node.create({
   name: "interactiveBlock",
   group: "block",
   content: "inline*",
-  atom: true,
   draggable: true,
 
   addAttributes() {
@@ -181,11 +171,6 @@ export const InteractiveNode = Node.create({
             return null;
           }
 
-          console.log(
-            "[DropPlugin] Detected 'drop' transaction.",
-            dropTransaction,
-          );
-
           let dropPos = -1;
           let droppedNode: ProsemirrorNode | null = null;
 
@@ -197,9 +182,6 @@ export const InteractiveNode = Node.create({
             ) {
               dropPos = step.from;
               droppedNode = step.slice.content.firstChild;
-              console.log(
-                `[DropPlugin] Found ReplaceStep for interactive node at position: ${dropPos}`,
-              );
               break;
             }
           }
@@ -214,21 +196,12 @@ export const InteractiveNode = Node.create({
             //    `+ droppedNode.content.size` moves to the end of the node's content.
             const endOfNodeContentPos = dropPos + 1 + droppedNode.content.size;
 
-            console.log(
-              `[DropPlugin] Drop position is ${dropPos}. Setting new TextSelection at end of content: ${endOfNodeContentPos}.`,
-            );
-
             // 3. Create and return a new transaction that sets a TextSelection.
             //    This places the cursor naturally and avoids the stale "NodeSelection" state.
             return newState.tr.setSelection(
               TextSelection.create(newState.doc, endOfNodeContentPos),
             );
-          } else {
-            console.warn(
-              "[DropPlugin] Drop transaction occurred, but a valid drop position or node was not found.",
-            );
           }
-
           return null;
         },
       }),
