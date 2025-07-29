@@ -24,6 +24,10 @@ export class TiptapEditor extends LitElement {
     return this.editor?.getJSON();
   }
 
+  public focusEditor() {
+    this.editor?.chain().focus().run();
+  }
+
   override firstUpdated() {
     this.editor = new Editor({
       element: this,

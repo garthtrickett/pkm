@@ -25,6 +25,7 @@ import {
   type NotePageError,
 } from "../../lib/client/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
+import { TiptapEditor } from "../editor/tiptap-editor";
 import {
   convertTiptapToMarkdown,
   convertMarkdownToTiptap,
@@ -213,6 +214,14 @@ const handleAction = (
 export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
+
+  private _handleTitleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault(); // Prevent any default form submission behavior
+      const editorElement = this.querySelector<TiptapEditor>("tiptap-editor");
+      editorElement?.focusEditor();
+    }
+  };
 
   private ctrl = new ReactiveSamController<this, Model, Action, NotePageError>(
     this,
@@ -631,6 +640,7 @@ export class NotePage extends LitElement {
               this._handleInput({
                 title: (e.target as HTMLInputElement).value,
               })}
+            @keydown=${this._handleTitleKeyDown}
           />
           ${this.ctrl.model.isMarkdownView
             ? html`<textarea
