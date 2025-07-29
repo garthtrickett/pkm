@@ -20,7 +20,8 @@ export const LinkMark = Mark.create({
       linkTarget: {
         default: null,
         parseHTML: (element) => element.getAttribute("data-link-target"),
-        renderHTML: (attributes) => ({
+        // By typing `attributes` here, we fix the `any` inference.
+        renderHTML: (attributes: { linkTarget: string | null }) => ({
           "data-link-target": attributes.linkTarget,
         }),
       },

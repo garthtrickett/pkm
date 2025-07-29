@@ -141,7 +141,7 @@ export type TiptapDoc = Schema.Schema.Type<typeof TiptapDocSchema>;
 const ContentSchema = Schema.transform(Schema.Unknown, TiptapDocSchema, {
   strict: true,
   decode: (u) => Schema.decodeUnknownSync(TiptapDocSchema)(u),
-  encode: (t) => Schema.encodeSync(TiptapDocSchema)(t as any),
+  encode: (t) => Schema.encodeSync(TiptapDocSchema)(t),
 });
 
 export const NoteSchema = Schema.Struct({

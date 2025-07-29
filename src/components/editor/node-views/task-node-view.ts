@@ -20,7 +20,7 @@ export class TaskNodeView extends LitElement {
    * Handles the change event from the checkbox.
    * It dispatches a custom event with the necessary details to update the task's state.
    */
-  private _onCheckboxChange(e: Event) {
+  private _onCheckboxChange = (e: Event) => {
     const isChecked = (e.target as HTMLInputElement).checked;
     this.dispatchEvent(
       new CustomEvent("update-task-status", {
@@ -32,7 +32,7 @@ export class TaskNodeView extends LitElement {
         },
       }),
     );
-  }
+  };
 
   override render() {
     return html`

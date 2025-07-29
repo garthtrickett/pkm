@@ -84,7 +84,6 @@ const mutators = {
     const noteKey = `note/${args.id}`;
     const noteJSON = await tx.get(noteKey);
     if (!noteJSON) {
-      console.error(`[updateNote mutator] Note with key ${noteKey} not found.`);
       return;
     }
 
@@ -101,7 +100,7 @@ const mutators = {
 
       const jsonCompatibleUpdate = {
         ...updatedNote,
-        content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content as any),
+        content: Schema.encodeSync(TiptapDocSchema)(updatedNote.content),
         created_at: updatedNote.created_at.toISOString(),
         updated_at: updatedNote.updated_at.toISOString(),
       };
@@ -134,18 +133,10 @@ const mutators = {
 
         // 4. Determine which blocks are new and need to be created.
         const blocksToCreate = interactiveBlocks.filter(
-          (b) =>
-            b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId),
+          (b) => b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId),
         );
 
         if (blocksToCreate.length > 0) {
-          console.log(
-            `[updateNote mutator] Optimistically CREATING ${
-              blocksToCreate.length
-            } new block(s): ${blocksToCreate
-              .map((b) => b.attrs.blockId)
-              .join(", ")}`,
-          );
           const now = new Date().toISOString();
           for (const iBlock of blocksToCreate) {
             const blockId = iBlock.attrs.blockId as BlockId;
@@ -182,14 +173,6 @@ const mutators = {
         jsonCompatibleUpdate as unknown as ReadonlyJSONValue,
       );
     } catch (error) {
-      console.error(
-        "🚨 [updateNote mutator] FAILED TO VALIDATE AND SAVE NOTE! Error:",
-        error,
-      );
-      console.error(
-        "🚨 [updateNote mutator] Problematic Tiptap content:",
-        JSON.stringify(args.content, null, 2),
-      );
       throw error;
     }
   },
@@ -201,32 +184,17 @@ const mutators = {
     tx: WriteTransaction,
     args: { blockId: BlockId; isComplete: boolean },
   ) => {
-    console.log("[updateTask mutator] Received args:", args);
-
     if (!args.blockId) {
-      console.error(
-        "[updateTask mutator] 🚨 FATAL: args.blockId is null or undefined. Cannot construct key.",
-      );
       return;
     }
 
     const blockKey = `block/${args.blockId}`;
-    console.log(
-      `[updateTask mutator] Attempting to get block with key: "${blockKey}"`,
-    );
 
     const blockJSON = await tx.get(blockKey);
 
     if (!blockJSON) {
-      console.error(
-        `[updateTask mutator] 🚨 ERROR: Block with key "${blockKey}" not found. The block may have been deleted or the ID is incorrect.`,
-      );
       return;
     }
-
-    console.log(
-      `[updateTask mutator] ✅ Successfully found block. Proceeding to update.`,
-    );
 
     const block = Schema.decodeUnknownSync(BlockSchema)(blockJSON);
 
@@ -370,7 +338,6 @@ export const ReplicacheLive = (
       });
 
       yield* setupWebSocket(client).pipe(Effect.forkDaemon);
-
       return { client };
     }),
     ({ client }) =>

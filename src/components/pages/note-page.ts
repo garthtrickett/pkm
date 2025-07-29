@@ -234,17 +234,16 @@ export class NotePage extends LitElement {
         ),
       ),
   );
-
   private _isInitialized = false;
   private _replicacheUnsubscribe: (() => void) | undefined;
   private _authUnsubscribe: (() => void) | undefined;
   private _saveFiber: Fiber.RuntimeFiber<void, unknown> | undefined;
 
-  private _handleTaskUpdate(
+  private _handleTaskUpdate = (
     e: CustomEvent<{ blockId: BlockId; isComplete: boolean }>,
-  ) {
+  ) => {
     this.ctrl.propose({ type: "UPDATE_TASK_START", payload: e.detail });
-  }
+  };
 
   private _handleEditorClick = (event: MouseEvent) => {
     const linkElement = (event.target as HTMLElement).closest(

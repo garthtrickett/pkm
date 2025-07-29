@@ -23,7 +23,7 @@ export const TagMark = Mark.create({
       tagName: {
         default: null,
         parseHTML: (element) => element.getAttribute("data-tag-name"),
-        renderHTML: (attributes) => ({
+        renderHTML: (attributes: { tagName: string | null }) => ({
           "data-tag-name": attributes.tagName,
         }),
       },

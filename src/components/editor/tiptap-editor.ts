@@ -65,7 +65,7 @@ export class TiptapEditor extends LitElement {
             },
           }),
         );
-        Promise.resolve().then(() => {
+        void Promise.resolve().then(() => {
           // --- DEBUG LOG ---
           this.isInternallyUpdating = false;
         });
