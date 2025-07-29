@@ -64,8 +64,15 @@ type Action =
   | { type: "NAVIGATE_TO_NOTE_BY_TITLE"; payload: { title: string } };
 
 // --- Pure Update Function ---
-// --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
+  // 🐞 DEBUG: Log every action and the state before the update.
+  console.log(
+    `%c[note-page update]%c Action: ${action.type}`,
+    "color: #10B981; font-weight: bold;",
+    "color: inherit;",
+    { action, oldModel: { ...model } },
+  );
+
   let newModel: Model;
 
   switch (action.type) {
@@ -73,7 +80,6 @@ const update = (model: Model, action: Action): Model => {
       newModel = {
         ...model,
         status: "loading",
-
         error: null,
         note: null,
         blocks: [],
@@ -86,17 +92,33 @@ const update = (model: Model, action: Action): Model => {
       const incomingVersion = action.payload.note.version;
       const currentVersion = model.note?.version ?? -1;
 
+      // 🐞 DEBUG: Log the version comparison which is critical for preventing stale overwrites.
+      console.log(
+        `%c[note-page update]%c DATA_UPDATED version check: incoming=${incomingVersion}, current=${currentVersion}`,
+        "color: #10B981; font-weight: bold;",
+        "color: inherit;",
+      );
+
       if (incomingVersion < currentVersion) {
-        return model; // This logic is now correct.
+        console.warn(
+          "%c[note-page update]%c Stale DATA_UPDATED received. Ignoring.",
+          "color: #FBBF24; font-weight: bold;",
+          "color: inherit;",
+        );
+        return model;
       }
 
       if (model.status === "saving") {
+        console.warn(
+          "%c[note-page update]%c DATA_UPDATED received while saving. Ignoring to prevent overwriting user input.",
+          "color: #FBBF24; font-weight: bold;",
+          "color: inherit;",
+        );
         return model;
       }
       newModel = {
         ...model,
         note: action.payload.note,
-
         blocks: action.payload.blocks,
         status: "idle",
         error: null,
@@ -110,9 +132,6 @@ const update = (model: Model, action: Action): Model => {
         note: {
           ...model.note,
           ...action.payload,
-          // ✅ --- THIS IS THE FIX --- ✅
-          // REMOVED: version: model.note.version + 1,
-          // The version should only ever be updated by the server via a DATA_UPDATED action.
         },
         status: "saving",
         error: null,
@@ -165,6 +184,13 @@ const update = (model: Model, action: Action): Model => {
       newModel = model;
       break;
   }
+  // 🐞 DEBUG: Log the new state after the update.
+  console.log(
+    `%c[note-page update]%c New state after '${action.type}'`,
+    "color: #10B981; font-weight: bold;",
+    "color: inherit;",
+    { newModel: { ...newModel } },
+  );
   return newModel;
 };
 

@@ -21,7 +21,6 @@ export const LinkMark = Mark.create({
         default: null,
         parseHTML: (element) => element.getAttribute("data-link-target"),
         // By typing `attributes` here, we fix the `any` inference.
-
         renderHTML: (attributes: { linkTarget: string | null }) => ({
           "data-link-target": attributes.linkTarget,
         }),
@@ -41,9 +40,9 @@ export const LinkMark = Mark.create({
 
   // Defines how this mark is rendered into HTML.
   renderHTML({ HTMLAttributes }) {
-    // We render it as an `<a>` tag with a default href to make it behave like a  dlink.
+    // We render it as an `<a>` tag with a default href to make it behave like a link.
     // The click event will be handled by the parent editor component.
-    return ["a", { ...HTMLAttributes, href: "#" }, 0];
+    return ["a", { ...HTMLAttributes, href: null }, 0];
   },
 
   // Automatically applies the mark when the user types the wiki-link pattern.
@@ -71,7 +70,6 @@ export const LinkMark = Mark.create({
       markPasteRule({
         find: WIKI_LINK_PASTE_REGEX,
         type: this.type,
-
         getAttributes: (match) => ({ linkTarget: match[1] }),
       }),
     ];
