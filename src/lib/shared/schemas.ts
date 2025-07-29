@@ -1,4 +1,4 @@
-// FILE: ./src/lib/shared/schemas.ts
+// src/lib/shared/schemas.ts
 import { Schema } from "effect";
 
 import type { NoteId, Note } from "../../types/generated/public/Note";
@@ -33,11 +33,26 @@ export const BlockIdSchema: Schema.Schema<BlockId, string, never> = (
   UUIDSchemaBase as unknown as Schema.Schema<BlockId, string, never>
 ).pipe(Schema.annotations({ message: () => "Invalid Block ID format." }));
 
-// Describes a simple text node inside a paragraph
+// Define the structure for marks (e.g., links, tags)
+const TagMarkSchema = Schema.Struct({
+  type: Schema.Literal("tagMark"),
+  attrs: Schema.Struct({ tagName: Schema.String }),
+});
+
+const LinkMarkSchema = Schema.Struct({
+  type: Schema.Literal("linkMark"),
+  attrs: Schema.Struct({ linkTarget: Schema.String }),
+});
+
+const MarkSchema = Schema.Union(TagMarkSchema, LinkMarkSchema);
+
+// Describes a simple text node inside a paragraph, now including marks
 export const TiptapTextNodeSchema = Schema.Struct({
   type: Schema.Literal("text"),
   text: Schema.String,
+  marks: Schema.optional(Schema.Array(MarkSchema)),
 });
+
 export type TiptapTextNode = Schema.Schema.Type<typeof TiptapTextNodeSchema>;
 
 // Describes a paragraph node, which contains text nodes
@@ -97,11 +112,16 @@ const TiptapBulletListNodeSchema: Schema.Schema<TiptapBulletListNode> =
     }),
   );
 
-// ✅ MODIFIED: Added the optional `content` property.
+// First, define a schema that cleanly transforms between a plain string and a branded BlockId.
+const BlockIdTransformSchema = Schema.transform(Schema.String, BlockIdSchema, {
+  decode: (s) => s as BlockId,
+  encode: (id) => id,
+});
+
 const InteractiveBlockSchema = Schema.Struct({
   type: Schema.Literal("interactiveBlock"),
   attrs: Schema.Struct({
-    blockId: Schema.Union(BlockIdSchema, Schema.Null),
+    blockId: Schema.NullOr(BlockIdTransformSchema),
     blockType: Schema.Literal("task"),
     fields: Schema.Struct({
       is_complete: Schema.Boolean,
@@ -141,7 +161,10 @@ export type TiptapDoc = Schema.Schema.Type<typeof TiptapDocSchema>;
 const ContentSchema = Schema.transform(Schema.Unknown, TiptapDocSchema, {
   strict: true,
   decode: (u) => Schema.decodeUnknownSync(TiptapDocSchema)(u),
-  encode: (t) => Schema.encodeSync(TiptapDocSchema)(t),
+  // ✅ FIX: The decoded TiptapDoc is structurally identical to its JSON representation.
+  // The branded types are compile-time only. By simply returning the value,
+  // we avoid the recursive `encodeSync` call that confuses TypeScript's inference engine.
+  encode: (t) => t,
 });
 
 export const NoteSchema = Schema.Struct({

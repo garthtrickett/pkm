@@ -26,8 +26,9 @@ import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
 
 const TASK_REGEX = /^\s*(-\s*)?\[( |x)\]\s+(.*)/i;
-const WIKI_LINK_REGEX = /\[\[([^\]]+)\]\]/g;
-const TAG_REGEX = /#(\w+)/g;
+// This file no longer needs these regexes, as we parse from the Tiptap JSON structure
+// const WIKI_LINK_REGEX = /\[\[([^\]]+)\]\]/g;
+// const TAG_REGEX = /#(\w+)/g;
 
 type TraversableNode =
   | TiptapParagraphNode
@@ -36,12 +37,39 @@ type TraversableNode =
   | TiptapHeadingNode
   | InteractiveBlock;
 
+// ✅ --- THIS IS THE CORRECTED FUNCTION --- ✅
 const parseContentToBlocks = (
   noteId: NoteId,
   userId: UserId,
   contentJSON: TiptapDoc,
 ): NewBlock[] => {
   const parsedBlocks: NewBlock[] = [];
+
+  // Helper to extract links and tags from marks on text nodes
+  const getLinksAndTagsFromContent = (
+    content: readonly TiptapNode[] | undefined,
+  ): { links: string[]; tags: string[] } => {
+    const links: string[] = [];
+    const tags: string[] = [];
+
+    if (!content) {
+      return { links, tags };
+    }
+
+    for (const node of content) {
+      if (node.type === "text" && node.marks) {
+        for (const mark of node.marks) {
+          if (mark.type === "linkMark" && mark.attrs?.linkTarget) {
+            links.push(mark.attrs.linkTarget);
+          }
+          if (mark.type === "tagMark" && mark.attrs?.tagName) {
+            tags.push(mark.attrs.tagName);
+          }
+        }
+      }
+    }
+    return { links, tags };
+  };
 
   const traverseNodes = (
     nodes: ReadonlyArray<TraversableNode> | undefined,
@@ -54,19 +82,21 @@ const parseContentToBlocks = (
     for (const node of nodes) {
       if (node.type === "interactiveBlock") {
         const blockId = node.attrs.blockId as BlockId;
-        // ✅ MODIFIED: Correctly access the content from the node.
         const textContent =
           node.content
+
             ?.map((t) => t.text)
             .join("")
             .trim() ?? "";
 
         parsedBlocks.push({
           id: blockId,
+
           note_id: noteId,
           user_id: userId,
           parent_id: parentId,
           type: node.attrs.blockType,
+
           content: textContent,
           depth,
           order: order++,
@@ -87,9 +117,14 @@ const parseContentToBlocks = (
         );
         const textContent =
           paragraphNode?.content
+
             ?.map((t: TiptapTextNode) => t.text)
             .join("")
             .trim() || "";
+
+        const { links, tags } = getLinksAndTagsFromContent(
+          paragraphNode?.content,
+        );
 
         parsedBlocks.push({
           id: newBlockId,
@@ -101,10 +136,12 @@ const parseContentToBlocks = (
           depth,
           order: order++,
           version: 1,
+
           fields: {},
-          tags: [],
-          links: [],
+          tags,
+          links,
           transclusions: [],
+
           file_path: "",
         });
 
@@ -115,6 +152,7 @@ const parseContentToBlocks = (
           traverseNodes(
             nestedList.content as TraversableNode[],
             newBlockId,
+
             depth + 1,
           );
         }
@@ -139,26 +177,25 @@ const parseContentToBlocks = (
             };
           }
 
-          const tags = [...textContent.matchAll(TAG_REGEX)].flatMap((match) =>
-            match[1] ? [match[1]] : [],
-          );
-          const links = [...textContent.matchAll(WIKI_LINK_REGEX)].flatMap(
-            (match) => (match[1] ? [match[1]] : []),
-          );
+          const { links, tags } = getLinksAndTagsFromContent(node.content);
 
           parsedBlocks.push({
             id: newBlockId,
+
             note_id: noteId,
             user_id: userId,
             parent_id: parentId,
+
             type: blockType,
             content: textContent,
             depth,
             order: order++,
+
             version: 1,
             fields,
             tags,
             links,
+
             transclusions: [],
             file_path: "",
           });
@@ -171,6 +208,7 @@ const parseContentToBlocks = (
   return parsedBlocks;
 };
 
+// ... The rest of the file (handleCreateNote, handleUpdateNote, etc.) remains the same.
 export const CreateNoteArgsSchema = Schema.Struct({
   id: NoteIdSchema,
   userID: UserIdSchema,
@@ -206,6 +244,7 @@ export const handleCreateNote = (
 
     const newNote: NewNote = {
       id: args.id,
+
       title: args.title,
       content: { type: "doc", content: [] },
       user_id: user!.id,
@@ -224,7 +263,8 @@ export const handleUpdateNote = (
 ): Effect.Effect<void, Error, Db | Auth> =>
   Effect.gen(function* () {
     yield* Effect.logInfo(
-      `[handleUpdateNote] Starting update for noteId: ${args.id}`,
+      `[handleUpdateNote] Starting 
+update for noteId: ${args.id}`,
     );
     const db = yield* Db;
     const { user } = yield* Auth;
@@ -236,11 +276,13 @@ export const handleUpdateNote = (
         .updateTable("note")
         .set({
           title: args.title,
+
           content: args.content,
           version: sql`version + 1`,
           updated_at: new Date(),
         })
         .where("id", "=", args.id)
+
         .where("user_id", "=", user!.id)
         .execute();
 
@@ -286,6 +328,7 @@ export const handleDeleteNote = (
     yield* Effect.promise(() =>
       db
         .deleteFrom("note")
+
         .where("id", "=", args.id)
         .where("user_id", "=", user!.id)
         .execute(),
@@ -325,6 +368,7 @@ export const handleUpdateTask = (
           updated_at: new Date(),
         })
         .where("id", "=", args.blockId)
+
         .where("user_id", "=", user!.id)
         .execute(),
     );

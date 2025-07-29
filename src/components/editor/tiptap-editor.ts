@@ -40,6 +40,7 @@ export class TiptapEditor extends LitElement {
         TagMark,
         LinkMark,
       ],
+
       content: this.initialContent || {
         type: "doc",
         content: [
@@ -48,6 +49,7 @@ export class TiptapEditor extends LitElement {
             content: [
               {
                 type: "text",
+
                 text: "Start typing here...",
               },
             ],
@@ -60,8 +62,8 @@ export class TiptapEditor extends LitElement {
         },
       },
       onUpdate: ({ editor }) => {
-        // --- DEBUG LOG ---
         this.isInternallyUpdating = true;
+
         this.dispatchEvent(
           new CustomEvent("update", {
             detail: {
@@ -69,20 +71,21 @@ export class TiptapEditor extends LitElement {
             },
           }),
         );
-        void Promise.resolve().then(() => {
-          // --- DEBUG LOG ---
+
+        // ✅ FIX: Defer resetting the flag until after the current synchronous
+        // execution context, which includes the parent's re-render.
+        setTimeout(() => {
           this.isInternallyUpdating = false;
-        });
+        }, 0);
       },
     });
   }
 
   override updated(changedProperties: PropertyValues<this>) {
     if (changedProperties.has("initialContent") && this.editor) {
-      // --- DEBUG LOG ---
-
       if (this.isInternallyUpdating) {
-        // --- DEBUG LOG ---
+        // ✅ FIX: With the setTimeout fix above, we no longer need to reset
+        // the flag here. We simply ignore the update.
         return;
       }
 
@@ -91,12 +94,9 @@ export class TiptapEditor extends LitElement {
         JSON.stringify(this.initialContent);
 
       if (!isSame) {
-        // --- DEBUG LOG ---
         this.editor.commands.setContent(this.initialContent, {
-          emitUpdate: false,
+          emitUpdate: false, // Don't trigger another `onUpdate` for this change.
         });
-      } else {
-        // --- DEBUG LOG ---
       }
     }
   }
@@ -139,6 +139,7 @@ export const convertTiptapToMarkdown = (doc: TiptapDoc): string => {
   } catch (error) {
     console.error(
       "[convertTiptapToMarkdown] CRITICAL: Failed to convert Tiptap JSON to Markdown via HTML.",
+
       error,
     );
     return "--- ERROR DURING MARKDOWN CONVERSION ---";
@@ -157,6 +158,7 @@ export const convertMarkdownToTiptap = (markdown: string): TiptapDoc => {
     );
     return {
       type: "doc",
+
       content: [
         {
           type: "paragraph",

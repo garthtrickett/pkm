@@ -64,6 +64,7 @@ type Action =
   | { type: "NAVIGATE_TO_NOTE_BY_TITLE"; payload: { title: string } };
 
 // --- Pure Update Function ---
+// --- Pure Update Function ---
 const update = (model: Model, action: Action): Model => {
   let newModel: Model;
 
@@ -72,6 +73,7 @@ const update = (model: Model, action: Action): Model => {
       newModel = {
         ...model,
         status: "loading",
+
         error: null,
         note: null,
         blocks: [],
@@ -80,23 +82,38 @@ const update = (model: Model, action: Action): Model => {
     case "INITIALIZE_ERROR":
       newModel = { ...model, status: "error", error: action.payload };
       break;
-    case "DATA_UPDATED":
+    case "DATA_UPDATED": {
+      const incomingVersion = action.payload.note.version;
+      const currentVersion = model.note?.version ?? -1;
+
+      if (incomingVersion < currentVersion) {
+        return model; // This logic is now correct.
+      }
+
       if (model.status === "saving") {
         return model;
       }
       newModel = {
         ...model,
         note: action.payload.note,
+
         blocks: action.payload.blocks,
         status: "idle",
         error: null,
       };
       break;
+    }
     case "UPDATE_FIELD":
       if (!model.note) return model;
       newModel = {
         ...model,
-        note: { ...model.note, ...action.payload },
+        note: {
+          ...model.note,
+          ...action.payload,
+          // ✅ --- THIS IS THE FIX --- ✅
+          // REMOVED: version: model.note.version + 1,
+          // The version should only ever be updated by the server via a DATA_UPDATED action.
+        },
         status: "saving",
         error: null,
       };
@@ -127,6 +144,7 @@ const update = (model: Model, action: Action): Model => {
       }
       break;
     }
+
     case "UPDATE_MARKDOWN_TEXT":
       newModel = { ...model, markdownText: action.payload };
       break;
@@ -187,6 +205,7 @@ const handleAction = (
 
         const notes: AppNote[] = noteJsons.flatMap((json) => {
           const option = Schema.decodeUnknownOption(NoteSchema)(json);
+
           return Option.isSome(option) ? [option.value] : [];
         });
 
@@ -196,7 +215,8 @@ const handleAction = (
           yield* navigate(`/notes/${targetNote.id}`);
         } else {
           yield* Effect.logWarning(
-            `Note with title "${title}" not found for navigation.`,
+            `Note with title "${title}" not found 
+for navigation.`,
           );
         }
       }).pipe(
@@ -214,7 +234,6 @@ const handleAction = (
 export class NotePage extends LitElement {
   @property({ type: String })
   override id: string = "";
-
   private _handleTitleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault(); // Prevent any default form submission behavior
@@ -231,6 +250,7 @@ export class NotePage extends LitElement {
       status: "loading",
       isMarkdownView: false,
       markdownText: "",
+
       error: null,
     },
     update,
@@ -290,6 +310,7 @@ export class NotePage extends LitElement {
                 .scan({ prefix: "block/" })
                 .values()
                 .toArray()
+
                 .then((allBlocks) => {
                   return { note, allBlocks };
                 }),
@@ -299,9 +320,11 @@ export class NotePage extends LitElement {
               if (this.ctrl.model.status !== "loading") {
                 this.ctrl.propose({
                   type: "INITIALIZE_ERROR",
+
                   payload: new NoteNotFoundError(),
                 });
               }
+
               return;
             }
 
@@ -324,6 +347,7 @@ export class NotePage extends LitElement {
                 } else {
                   console.warn(
                     "[note-page] Failed to parse a block from IndexedDB. Filtering it out.",
+
                     { invalidData: blockJson },
                   );
                 }
@@ -337,6 +361,7 @@ export class NotePage extends LitElement {
                   const sortedBlocks = [...blocks].sort(
                     (a, b) => a.order - b.order,
                   );
+
                   this.ctrl.propose({
                     type: "DATA_UPDATED",
                     payload: { note, blocks: sortedBlocks },
@@ -344,6 +369,7 @@ export class NotePage extends LitElement {
                 } else {
                   console.error(
                     "[note-page subscribe callback] Data parse failed.",
+
                     Cause.pretty(exit.cause),
                   );
                   this.ctrl.propose({
@@ -412,6 +438,7 @@ export class NotePage extends LitElement {
       function* (this: NotePage) {
         const replicache = yield* ReplicacheService;
         const noteToSave = this.ctrl.model.note;
+
         if (!noteToSave || !noteToSave.content) {
           return;
         }
@@ -420,6 +447,7 @@ export class NotePage extends LitElement {
             replicache.client.mutate.updateNote({
               id: this.id as NoteId,
               title: noteToSave.title,
+
               content: noteToSave.content,
             }),
           catch: (cause) => new NoteSaveError({ cause }),
@@ -434,6 +462,7 @@ export class NotePage extends LitElement {
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
+
     runClientUnscoped(
       this._flushChangesEffect().pipe(
         Effect.catchTag("NoteSaveError", (error) =>
@@ -593,6 +622,7 @@ export class NotePage extends LitElement {
 
     const editorClasses = [
       styles.viewSwitcherButton,
+
       !isMarkdownView ? styles.viewSwitcherButtonActive : "",
     ]
       .filter(Boolean)
@@ -620,6 +650,7 @@ export class NotePage extends LitElement {
                 >
                   Editor
                 </button>
+
                 <button
                   class=${markdownClasses}
                   ?disabled=${isMarkdownView}
@@ -642,6 +673,7 @@ export class NotePage extends LitElement {
               })}
             @keydown=${this._handleTitleKeyDown}
           />
+
           ${this.ctrl.model.isMarkdownView
             ? html`<textarea
                 class=${styles.markdownPreview}
