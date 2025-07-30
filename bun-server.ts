@@ -70,21 +70,33 @@ const staticHandler = Effect.gen(function* (_) {
   const urlPath = req.url;
   const clientBuildPath = "dist";
 
-  // Determine the file path, defaulting to index.html
+  // Determine if the request is likely for a static file asset (e.g., has a file extension).
+  const isAssetRequest = urlPath.split("/").pop()!.includes(".");
+
   const filePath = path.join(
     clientBuildPath,
-    urlPath.endsWith("/") || !urlPath.split("/").pop()!.includes(".")
-      ? "index.html"
-      : urlPath,
+    // If it's the root path or any path without a file extension, default to index.html
+    urlPath.endsWith("/") || !isAssetRequest ? "index.html" : urlPath,
   );
 
   return yield* _(
     HttpServerResponse.file(filePath),
-    Effect.catchTag("SystemError", (e) =>
-      e.reason === "NotFound"
-        ? HttpServerResponse.file(path.join(clientBuildPath, "index.html"))
-        : Effect.fail(e),
-    ),
+    Effect.catchTag("SystemError", (e) => {
+      // If a file is not found:
+      if (e.reason === "NotFound") {
+        // If it was an asset request (e.g., .js, .css), it should be a 404.
+        // Otherwise, it's a client-side route (e.g., /notes/123), so serve the SPA's entry point.
+        if (isAssetRequest) {
+          return HttpServerResponse.empty({ status: 404 });
+        } else {
+          return HttpServerResponse.file(
+            path.join(clientBuildPath, "index.html"),
+          );
+        }
+      }
+      // For other system errors, let the error bubble up.
+      return Effect.fail(e);
+    }),
   );
 });
 

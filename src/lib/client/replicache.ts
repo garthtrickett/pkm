@@ -305,30 +305,30 @@ export const ReplicacheLive = (
       const userDbName = makeIDBName(user.id);
       const metaDbName = "replicache-dbs-v0";
 
-      const deleteDb = (dbName: string) =>
-        Effect.async<void, Error>((resume) => {
-          const req = window.indexedDB.deleteDatabase(dbName);
-          req.onblocked = () => {
-            runClientUnscoped(
-              clientLog("warn", `Deletion of '${dbName}' is blocked.`),
-            );
-          };
-          req.onsuccess = () => resume(Effect.succeed(undefined));
-          req.onerror = () =>
-            resume(
-              Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
-            );
-        });
+      // const deleteDb = (dbName: string) =>
+      //   Effect.async<void, Error>((resume) => {
+      //     const req = window.indexedDB.deleteDatabase(dbName);
+      //     req.onblocked = () => {
+      //       runClientUnscoped(
+      //         clientLog("warn", `Deletion of '${dbName}' is blocked.`),
+      //       );
+      //     };
+      //     req.onsuccess = () => resume(Effect.succeed(undefined));
+      //     req.onerror = () =>
+      //       resume(
+      //         Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
+      //       );
+      //   });
 
       yield* clientLog(
         "info",
         `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
       );
 
-      yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
-        concurrency: "unbounded",
-        discard: true,
-      }).pipe(Effect.catchAll(() => Effect.void));
+      // yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
+      //   concurrency: "unbounded",
+      //   discard: true,
+      // }).pipe(Effect.catchAll(() => Effect.void));
       const client = new Replicache({
         licenseKey: "l2c75a896d85a4914a51e54a32338b556",
         name: user.id,
