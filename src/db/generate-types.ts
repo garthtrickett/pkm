@@ -3,8 +3,8 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { config } from "dotenv";
 import { Effect, Cause, Exit, Data, Layer } from "effect";
-import { ConfigLive } from "../src/lib/server/Config";
-import { ObservabilityLive } from "../src/lib/server/observability";
+import { ConfigLive } from "../lib/server/Config";
+import { ObservabilityLive } from "../lib/server/observability";
 
 config({ path: ".env" });
 

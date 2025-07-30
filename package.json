@@ -10,7 +10,7 @@
     "start": "bun run bun-server.ts",
     "lint": "eslint . --ext .ts,.js --cache --fix",
     "check-types": "tsc --noEmit",
-    "db:generate": "bun run scripts/generate-types.ts",
+    "db:generate": "bun run src/db/generate-types.ts",
     "db:migrate": "bun run src/db/migrator.ts up",
     "db:seed": "bun run src/db/seed.ts",
     "migrate": "bun run db:migrate && bun run db:generate && bun run db:seed",
