@@ -1,8 +1,18 @@
-// FILE: ./bun-server.ts
-import { HttpRouter, HttpServer } from "@effect/platform";
-import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
+import {
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "@effect/platform";
+import {
+  BunHttpServer,
+  BunRuntime,
+  BunFileSystem,
+  BunPath,
+} from "@effect/platform-bun";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Effect, Layer } from "effect";
+import * as Path from "@effect/platform/Path";
 
 // Service and Config Layers
 import { ObservabilityLive } from "./src/lib/server/observability";
@@ -38,6 +48,8 @@ const AppServicesLive = Layer.mergeAll(
   CryptoLive,
   PokeServiceLive,
   S3UploaderLive,
+  BunFileSystem.layer, // Added for file system access
+  BunPath.layer, // Added for path manipulation
 ).pipe(Layer.provide(ConfigLive));
 
 const RpcHandlersLive = mergedRpc.toLayer(allRpcHandlers);
@@ -51,14 +63,42 @@ const rpcApp = Effect.flatten(
 );
 const userHttpApp = UserHttpRoutes.pipe(HttpRouter.use(httpAuthMiddleware));
 
+// --- Static File Serving Handler ---
+const staticHandler = Effect.gen(function* (_) {
+  const path = yield* _(Path.Path);
+  const req = yield* _(HttpServerRequest.HttpServerRequest);
+  const urlPath = req.url;
+  const clientBuildPath = "dist";
+
+  // Determine the file path, defaulting to index.html
+  const filePath = path.join(
+    clientBuildPath,
+    urlPath.endsWith("/") || !urlPath.split("/").pop()!.includes(".")
+      ? "index.html"
+      : urlPath,
+  );
+
+  return yield* _(
+    HttpServerResponse.file(filePath),
+    Effect.catchTag("SystemError", (e) =>
+      e.reason === "NotFound"
+        ? HttpServerResponse.file(path.join(clientBuildPath, "index.html"))
+        : Effect.fail(e),
+    ),
+  );
+});
+
 // --- Build the Full Application Router ---
 
 const appRouter = HttpRouter.empty.pipe(
   HttpRouter.mountApp("/api/rpc", rpcApp),
   HttpRouter.mountApp("/api/user", userHttpApp),
-  HttpRouter.mountApp("/api/replicache", replicacheHttpApp), // Refactored
-  HttpRouter.get("/ws", wsHandler), // Refactored
+  HttpRouter.mountApp("/api/replicache", replicacheHttpApp),
+  HttpRouter.get("/ws", wsHandler),
+  // Fallback to serving static files for any other GET request
+  HttpRouter.get("/*", staticHandler),
 );
+
 // --- Create and Launch the Final Server ---
 
 const program = HttpServer.serve(appRouter).pipe(

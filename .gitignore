@@ -9,3 +9,9 @@ a.txt
 *.stTheme.cache
 *.sublime-workspace
 *.sublime-project
+
+# Build output
+dist/
+
+# Cache files
+.eslintcache
