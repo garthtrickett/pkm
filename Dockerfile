@@ -1,7 +1,7 @@
 # Stage 1: Install dependencies
 FROM oven/bun:1 as deps
 WORKDIR /usr/src/app
-COPY package.json bun.lockb ./
+COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # Stage 2: Build the app and run migrations
