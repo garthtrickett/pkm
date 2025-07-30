@@ -8,8 +8,6 @@ RUN bun install --frozen-lockfile
 FROM deps as build
 WORKDIR /usr/src/app
 COPY . .
-# This command needs DATABASE_URL to be set in Render's environment variables
-RUN bun run migrate
 # This assumes your Vite build command is named "build" in package.json
 RUN bun run build
 
