@@ -4,7 +4,7 @@ import {
   type ReadonlyJSONValue,
   type WriteTransaction,
   type Puller,
-  makeIDBName,
+  // makeIDBName,
   type PullRequest as ReplicachePullRequest,
   type PullerResult,
 } from "replicache";
@@ -21,7 +21,7 @@ import { NoteSchema, BlockSchema, TiptapDocSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
 import {
   runClientPromise,
-  runClientUnscoped,
+  // runClientUnscoped,
   CustomHttpClientLive,
 } from "./runtime";
 import { PullResponseSchema } from "../shared/replicache-schemas";
@@ -302,8 +302,8 @@ export const ReplicacheLive = (
   );
   const replicacheServiceEffect = Effect.acquireRelease(
     Effect.gen(function* () {
-      const userDbName = makeIDBName(user.id);
-      const metaDbName = "replicache-dbs-v0";
+      // const userDbName = makeIDBName(user.id);
+      // const metaDbName = "replicache-dbs-v0";
 
       // const deleteDb = (dbName: string) =>
       //   Effect.async<void, Error>((resume) => {
@@ -320,10 +320,10 @@ export const ReplicacheLive = (
       //       );
       //   });
 
-      yield* clientLog(
-        "info",
-        `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
-      );
+      // yield* clientLog(
+      //   "info",
+      //   `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
+      // );
 
       // yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
       //   concurrency: "unbounded",
