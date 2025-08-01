@@ -14,7 +14,7 @@ export async function up(db: Kysely<Database>) {
       c.notNull().references("user.id").onDelete("cascade"),
     )
     .addColumn("title", "text", (c) => c.notNull())
-    .addColumn("content", "jsonb", (c) => c.notNull()) // [!code focus]
+    .addColumn("content", "jsonb", (c) => c.notNull())
     .addColumn("version", "integer", (c) => c.notNull().defaultTo(1))
     .addColumn("created_at", "timestamp", (c) =>
       c.notNull().defaultTo(db.fn("now")),
@@ -22,7 +22,10 @@ export async function up(db: Kysely<Database>) {
     .addColumn("updated_at", "timestamp", (c) =>
       c.notNull().defaultTo(db.fn("now")),
     )
+    // Add a unique constraint on the user_id and title
+    .addUniqueConstraint("note_user_id_title_unique", ["user_id", "title"])
     .execute();
+
   // Tag Table
   await db.schema
     .createTable("tag")

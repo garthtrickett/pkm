@@ -24,6 +24,7 @@ import { LinkService, LinkServiceLive } from "../../lib/server/LinkService";
 import { TaskService, TaskServiceLive } from "../../lib/server/TaskService";
 import type { NewBlock, BlockId } from "../../types/generated/public/Block";
 import type { NoteId } from "../../types/generated/public/Note";
+import { NoteTitleExistsError } from "../../lib/shared/errors";
 
 const TASK_REGEX = /^\s*(-\s*)?\[( |x)\]\s+(.*)/i;
 // This file no longer needs these regexes, as we parse from the Tiptap JSON structure
@@ -260,16 +261,30 @@ export const handleCreateNote = (
 
 export const handleUpdateNote = (
   args: UpdateNoteArgs,
-): Effect.Effect<void, Error, Db | Auth> =>
+): Effect.Effect<void, NoteTitleExistsError | Error, Db | Auth> =>
   Effect.gen(function* () {
     yield* Effect.logInfo(
-      `[handleUpdateNote] Starting 
-update for noteId: ${args.id}`,
+      `[handleUpdateNote] Starting update for noteId: ${args.id}`,
     );
     const db = yield* Db;
     const { user } = yield* Auth;
     const linkService = yield* LinkService;
     const taskService = yield* TaskService;
+
+    // Check for duplicate title
+    const existingNote = yield* Effect.promise(() =>
+      db
+        .selectFrom("note")
+        .select("id")
+        .where("title", "=", args.title)
+        .where("user_id", "=", user!.id)
+        .where("id", "!=", args.id)
+        .executeTakeFirst(),
+    );
+
+    if (existingNote) {
+      return yield* Effect.fail(new NoteTitleExistsError());
+    }
 
     const updateAllEffect = Effect.promise(async () => {
       await db

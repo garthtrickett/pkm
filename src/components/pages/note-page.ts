@@ -24,6 +24,7 @@ import {
   NoteTaskUpdateError,
   type NotePageError,
 } from "../../lib/client/errors";
+import { NoteTitleExistsError } from "../../lib/shared/errors";
 import type { FullClientContext } from "../../lib/client/runtime";
 import { TiptapEditor } from "../editor/tiptap-editor";
 import {
@@ -40,7 +41,7 @@ interface Model {
   status: Status;
   isMarkdownView: boolean;
   markdownText: string;
-  error: NotePageError | null;
+  error: NotePageError | NoteTitleExistsError | null;
 }
 
 // --- Actions ---
@@ -55,7 +56,7 @@ type Action =
   | { type: "UPDATE_MARKDOWN_TEXT"; payload: string }
   | { type: "TOGGLE_MARKDOWN_VIEW" }
   | { type: "SAVE_SUCCESS" }
-  | { type: "SAVE_ERROR"; payload: NoteSaveError }
+  | { type: "SAVE_ERROR"; payload: NoteSaveError | NoteTitleExistsError }
   | {
       type: "UPDATE_TASK_START";
       payload: { blockId: BlockId; isComplete: boolean };
@@ -73,7 +74,9 @@ const update = (model: Model, action: Action): Model => {
     { action, oldModel: { ...model } },
   );
 
-  let newModel: Model;
+  let newModel:
+
+  Model;
 
   switch (action.type) {
     case "INITIALIZE_START":
@@ -241,8 +244,7 @@ const handleAction = (
           yield* navigate(`/notes/${targetNote.id}`);
         } else {
           yield* Effect.logWarning(
-            `Note with title "${title}" not found 
-for navigation.`,
+            `Note with title "${title}" not found \nfor navigation.`,
           );
         }
       }).pipe(
@@ -268,7 +270,12 @@ export class NotePage extends LitElement {
     }
   };
 
-  private ctrl = new ReactiveSamController<this, Model, Action, NotePageError>(
+  private ctrl = new ReactiveSamController<
+    this,
+    Model,
+    Action,
+    NotePageError | NoteTitleExistsError
+  >(
     this,
     {
       note: null,
@@ -514,18 +521,58 @@ export class NotePage extends LitElement {
   };
 
   private _scheduleSave = () => {
+    // Interrupt any previously scheduled save
     if (this._saveFiber) {
       runClientUnscoped(Fiber.interrupt(this._saveFiber));
     }
-    const debouncedSave = Effect.sleep(Duration.millis(500)).pipe(
-      Effect.andThen(this._flushChangesEffect()),
+
+    // The new logic with the client-side check
+    const debouncedSaveWithCheck = Effect.gen(
+      function* (this: NotePage) {
+        // 1. Get the current note's title and ID from the component's state.
+        const noteToSave = this.ctrl.model.note;
+        if (!noteToSave) return;
+
+        const replicache = yield* ReplicacheService;
+
+        // 2. Query all notes from the local Replicache cache.
+        const allNotesJson = yield* Effect.promise(() =>
+          replicache.client.query((tx) =>
+            tx.scan({ prefix: "note/" }).values().toArray(),
+          ),
+        );
+        const allNotes: AppNote[] = allNotesJson.flatMap((json) =>
+          Schema.decodeUnknownOption(NoteSchema)(json).pipe(Option.toArray),
+        );
+
+        // 3. Check if any *other* note has the same title (case-insensitive).
+        const isDuplicate = allNotes.some(
+          (note) =>
+            note.id !== noteToSave.id &&
+            note.title.toLowerCase().trim() ===
+              noteToSave.title.toLowerCase().trim(),
+        );
+
+        if (isDuplicate) {
+          // 4. If it's a duplicate, fail with a specific error.
+          return yield* Effect.fail(new NoteTitleExistsError());
+        }
+
+        // 5. If it's unique, proceed with the original save logic.
+        yield* this._flushChangesEffect();
+      }.bind(this),
+    );
+
+    // This part remains the same
+    const finalEffect = Effect.sleep(Duration.millis(500)).pipe(
+      Effect.andThen(debouncedSaveWithCheck),
       Effect.match({
         onFailure: (error) =>
           this.ctrl.propose({ type: "SAVE_ERROR", payload: error }),
         onSuccess: () => this.ctrl.propose({ type: "SAVE_SUCCESS" }),
       }),
     );
-    this._saveFiber = runClientUnscoped(debouncedSave);
+    this._saveFiber = runClientUnscoped(finalEffect);
   };
 
   private _handleMarkdownInput = (e: Event) => {
@@ -612,7 +659,9 @@ export class NotePage extends LitElement {
 
   override render() {
     const { note, error, status, isMarkdownView } = this.ctrl.model;
-    const getErrorMessage = (e: NotePageError | null): string | null => {
+    const getErrorMessage = (
+      e: NotePageError | NoteTitleExistsError | null,
+    ): string | null => {
       if (!e) return null;
       switch (e._tag) {
         case "NoteNotFoundError":
@@ -621,6 +670,8 @@ export class NotePage extends LitElement {
           return "There was an error reading the note's data from the local database.";
         case "NoteSaveError":
           return "Failed to save changes. Please check your connection.";
+        case "NoteTitleExistsError":
+          return "A note with this title already exists.";
         case "NoteTaskUpdateError":
           return "Failed to update task. Please check your connection.";
       }
