@@ -36,15 +36,19 @@ export const AuthMiddlewareLive = Layer.effect(
     return ({ clientId, rpc }) => {
       const logic = Effect.gen(function* () {
         const rpcTag = rpc._tag;
-        yield* Effect.logInfo(
-          { clientId, rpc: rpcTag },
-          "AuthMiddleware triggered",
-        ); //
 
         const request = yield* HttpServerRequest.HttpServerRequest;
+        yield* Effect.logInfo(
+          { clientId, rpc: rpcTag, headers: request.headers },
+          "AuthMiddleware triggered with headers",
+        );
         const tokenOption = getBearerTokenFromRequest(request);
 
         if (Option.isNone(tokenOption)) {
+          // <<< ADDED LOGGING
+          yield* Effect.logWarning(
+            "[AuthMiddleware] FAILURE: No authorization token provided.",
+          );
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
@@ -53,9 +57,22 @@ export const AuthMiddlewareLive = Layer.effect(
           );
         }
 
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug(
+          `[AuthMiddleware] Token found. Calling jwtService.validateToken...`,
+        );
+
         const user = yield* jwtService.validateToken(tokenOption.value).pipe(
           // Provide the Db service to the validation effect
           Effect.provideService(Db, db),
+        );
+
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug(
+          `[AuthMiddleware] SUCCESS: Token validated for user.`,
+          {
+            userId: user.id,
+          },
         );
 
         yield* Metric.increment(sessionValidationSuccessCounter);
@@ -84,8 +101,9 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
     const tokenOption = getBearerTokenFromRequest(request);
 
     if (Option.isNone(tokenOption)) {
+      // ✅ CORRECTED LOG MESSAGE
       yield* Effect.logWarning(
-        "[httpAuthMiddleware] FAILURE: No session cookie provided.",
+        "[httpAuthMiddleware] FAILURE: No authorization token provided.",
       );
       return yield* Effect.fail(
         HttpServerResponse.json({ error: "Unauthorized" }, { status: 401 }),

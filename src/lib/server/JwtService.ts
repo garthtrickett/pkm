@@ -51,7 +51,7 @@ export const JwtServiceLive = Layer.effect(
           createJWT(
             "HS256",
             secretKey,
-            {},
+            { user }, // Embed the public user object in the payload
             {
               subject: user.id,
               expiresIn: new TimeSpan(30, "d"),
@@ -63,12 +63,38 @@ export const JwtServiceLive = Layer.effect(
 
     const validateToken = (token: string) =>
       Effect.gen(function* () {
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug(
+          `[JwtService] Starting token validation for token: ${token.substring(0, 15)}...`,
+        );
+
         const jwt = yield* Effect.tryPromise({
           try: () => validateJWT("HS256", secretKey, token),
-          catch: (cause) => new JwtValidationError({ cause }),
+          // <<< ADDED LOGGING
+          catch: (cause) => {
+            Effect.runSync(
+              Effect.logError(
+                "[JwtService] CRITICAL: validateJWT threw an error.",
+                { error: cause },
+              ),
+            );
+            return new JwtValidationError({ cause });
+          },
         });
 
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug(
+          "[JwtService] Token signature and expiration are valid.",
+          {
+            payload: jwt,
+          },
+        );
+
         if (!jwt.subject) {
+          // <<< ADDED LOGGING
+          yield* Effect.logError(
+            "[JwtService] Token is missing 'sub' (subject) claim.",
+          );
           return yield* Effect.fail(
             new JwtValidationError({
               cause: "Invalid token payload: missing sub claim",
@@ -77,6 +103,12 @@ export const JwtServiceLive = Layer.effect(
         }
 
         const userId = yield* Schema.decodeUnknown(UserIdSchema)(jwt.subject);
+
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug(
+          `[JwtService] Token subject parsed as userId: ${userId}.`,
+        );
+        yield* Effect.logDebug("[JwtService] Looking up user in database...");
 
         const user = yield* Effect.promise(() =>
           db
@@ -89,22 +121,45 @@ export const JwtServiceLive = Layer.effect(
           Effect.flatMap(Effect.fromNullable),
         );
 
+        // <<< ADDED LOGGING
+        yield* Effect.logDebug("[JwtService] User found in database.", {
+          userId: user.id,
+        });
+        yield* Effect.logDebug(
+          "[JwtService] Parsing database user record into PublicUser schema.",
+        );
+
         return yield* Schema.decodeUnknown(PublicUserSchema)(user);
       }).pipe(
         Effect.catchTags({
-          JwtValidationError: () =>
-            Effect.fail(
-              new AuthError({
-                _tag: "Unauthorized",
-                message: "Invalid or expired token.",
-              }), //
+          JwtValidationError: (e) =>
+            // <<< ADDED LOGGING
+            Effect.logWarning(
+              "[JwtService] Token validation failed. Mapping to Unauthorized.",
+              e,
+            ).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new AuthError({
+                    _tag: "Unauthorized",
+                    message: "Invalid or expired token.",
+                  }), //
+                ),
+              ),
             ),
           NoSuchElementException: () =>
-            Effect.fail(
-              new AuthError({
-                _tag: "Unauthorized",
-                message: "User for token not found.",
-              }),
+            // <<< ADDED LOGGING
+            Effect.logWarning(
+              "[JwtService] User for token not found in DB. Mapping to Unauthorized.",
+            ).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new AuthError({
+                    _tag: "Unauthorized",
+                    message: "User for token not found.",
+                  }),
+                ),
+              ),
             ),
           ParseError: (cause) =>
             Effect.logError(

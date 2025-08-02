@@ -1,14 +1,17 @@
 // FILE: ./src/lib/client/replicache.ts
+import { runClientUnscoped } from "./runtime";
 import {
   Replicache,
   type ReadonlyJSONValue,
   type WriteTransaction,
   type Puller,
-  // makeIDBName,
-  type PullRequest as ReplicachePullRequest,
   type PullerResult,
+  type Pusher,
+  type PusherResult,
+  type PushRequest,
 } from "replicache";
 import { Context, Layer, Effect, Schema } from "effect";
+import { HttpClient, HttpBody } from "@effect/platform";
 import type {
   PublicUser,
   NoteId,
@@ -19,14 +22,10 @@ import type {
 } from "../shared/schemas";
 import { NoteSchema, BlockSchema, TiptapDocSchema } from "../shared/schemas";
 import { setupWebSocket } from "./replicache/websocket";
-import {
-  runClientPromise,
-  // runClientUnscoped,
-  CustomHttpClientLive,
-} from "./runtime";
+import { runClientPromise, type FullClientContext } from "./runtime";
 import { PullResponseSchema } from "../shared/replicache-schemas";
 import { clientLog } from "./clientLog";
-import { RpcLogClientLive } from "./rpc";
+import { RpcLogClient } from "./rpc";
 
 class PullerHttpError extends Error {
   httpStatusCode: number;
@@ -70,7 +69,6 @@ const mutators = {
       created_at: newNote.created_at.toISOString(),
       updated_at: newNote.updated_at.toISOString(),
     };
-
     await tx.set(
       `note/${newNote.id}`,
       jsonCompatibleNote as unknown as ReadonlyJSONValue,
@@ -105,7 +103,6 @@ const mutators = {
         updated_at: updatedNote.updated_at.toISOString(),
       };
 
-      // --- START OF REFACTORED BLOCK SYNC LOGIC ---
       const interactiveBlocks = (args.content.content ?? []).filter(
         (node) => node.type === "interactiveBlock",
       );
@@ -115,23 +112,17 @@ const mutators = {
         .filter(Boolean);
 
       if (blockIdsInContent.length > 0) {
-        // ✅ THIS IS THE FIX ✅
-        // 2. Efficiently check which blocks exist by running get() calls in parallel.
         const existingBlocks = new Set<BlockId>();
         const existenceChecks = blockIdsInContent.map((id) =>
           tx.get(`block/${id}`),
         );
         const results = await Promise.all(existenceChecks);
 
-        // 3. Populate the set of existing blocks based on the results.
         results.forEach((value, index) => {
           if (value) {
-            // If a value was returned, the block exists.
             existingBlocks.add(blockIdsInContent[index]!);
           }
         });
-
-        // 4. Determine which blocks are new and need to be created.
         const blocksToCreate = interactiveBlocks.filter(
           (b) => b.attrs?.blockId && !existingBlocks.has(b.attrs.blockId),
         );
@@ -166,7 +157,6 @@ const mutators = {
           }
         }
       }
-      // --- END OF REFACTORED BLOCK SYNC LOGIC ---
 
       await tx.set(
         noteKey,
@@ -231,114 +221,122 @@ export class ReplicacheService extends Context.Tag("ReplicacheService")<
   IReplicacheService
 >() {}
 
-const debugPuller: Puller = (
-  request: ReplicachePullRequest,
-): Promise<PullerResult> => {
-  const pullEffect = Effect.tryPromise({
-    try: async () => {
-      if (!("clientGroupID" in request)) {
-        throw new Error(
-          `PullRequestV0 is not supported. Request: ${JSON.stringify(request)}`,
-        );
-      }
-
-      const body = {
-        clientGroupID: request.clientGroupID,
-        cookie: request.cookie,
-      };
-      const response = await fetch("/api/replicache/pull", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        throw new PullerHttpError(
-          `HTTP Error: ${response.status}`,
-          response.status,
-          responseText,
-        );
-      }
-
-      const pullResponse = Schema.decodeUnknownSync(PullResponseSchema)(
-        JSON.parse(responseText),
+const puller: Puller = (request) => {
+  const pullEffect = Effect.gen(function* () {
+    if (!("clientGroupID" in request)) {
+      throw new Error(
+        `PullRequestV0 is not supported. Request: ${JSON.stringify(request)}`,
       );
-      return {
-        response: pullResponse,
-        httpRequestInfo: {
-          httpStatusCode: response.status,
-          errorMessage: "",
-        },
-      } as PullerResult;
-    },
-    catch: (error: unknown) => {
+    }
+    const client = yield* HttpClient.HttpClient;
+    const requestBody = yield* HttpBody.json({
+      clientGroupID: request.clientGroupID,
+      cookie: request.cookie,
+    });
+    const pullResponse = yield* client.post("/api/replicache/pull", {
+      body: requestBody,
+    });
+    if (pullResponse.status < 200 || pullResponse.status >= 300) {
+      const responseText = yield* pullResponse.text;
+      throw new PullerHttpError(
+        `HTTP Error: ${pullResponse.status}`,
+        pullResponse.status,
+        responseText,
+      );
+    }
+    const json = yield* pullResponse.json;
+    const decoded = yield* Schema.decodeUnknown(PullResponseSchema)(json);
+    return {
+      response: decoded,
+      httpRequestInfo: {
+        httpStatusCode: pullResponse.status,
+        errorMessage: "",
+      },
+    } as PullerResult;
+  }).pipe(
+    Effect.catchAll((error) => {
       let httpStatusCode = 0;
       let errorMessage = "Unknown puller error";
-
       if (error instanceof PullerHttpError) {
         httpStatusCode = error.httpStatusCode;
         errorMessage = error.errorMessage;
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
-
-      return {
+      return Effect.succeed({
         response: undefined,
         httpRequestInfo: { httpStatusCode, errorMessage },
-      } as PullerResult;
-    },
-  });
+      } as PullerResult);
+    }),
+  );
+  return runClientPromise(
+    pullEffect as Effect.Effect<PullerResult, never, FullClientContext>,
+  );
+};
 
-  return runClientPromise(pullEffect);
+const pusher: Pusher = (requestBody: PushRequest) => {
+  const pushEffect = Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const body = yield* HttpBody.json(requestBody);
+
+    const response = yield* client.post("/api/replicache/push", {
+      body,
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      const responseText = yield* response.text;
+      return {
+        httpRequestInfo: {
+          httpStatusCode: response.status,
+          errorMessage: responseText,
+        },
+      };
+    }
+
+    return {
+      httpRequestInfo: {
+        httpStatusCode: response.status,
+        errorMessage: "",
+      },
+    };
+  }).pipe(
+    Effect.catchAll((error) => {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown push error";
+      return Effect.succeed({
+        httpRequestInfo: {
+          httpStatusCode: 0,
+          errorMessage,
+        },
+      });
+    }),
+  );
+
+  return runClientPromise(
+    pushEffect as Effect.Effect<PusherResult, never, FullClientContext>,
+  );
 };
 
 export const ReplicacheLive = (
   user: PublicUser,
-): Layer.Layer<ReplicacheService, never, never> => {
-  const RpcLogClientSelfContained = Layer.provide(
-    RpcLogClientLive,
-    CustomHttpClientLive,
-  );
+): Layer.Layer<ReplicacheService, never, RpcLogClient> => {
   const replicacheServiceEffect = Effect.acquireRelease(
-    Effect.gen(function* () {
-      // const userDbName = makeIDBName(user.id);
-      // const metaDbName = "replicache-dbs-v0";
-
-      // const deleteDb = (dbName: string) =>
-      //   Effect.async<void, Error>((resume) => {
-      //     const req = window.indexedDB.deleteDatabase(dbName);
-      //     req.onblocked = () => {
-      //       runClientUnscoped(
-      //         clientLog("warn", `Deletion of '${dbName}' is blocked.`),
-      //       );
-      //     };
-      //     req.onsuccess = () => resume(Effect.succeed(undefined));
-      //     req.onerror = () =>
-      //       resume(
-      //         Effect.fail(new Error(`Failed to delete IndexedDB: ${dbName}`)),
-      //       );
-      //   });
-
-      // yield* clientLog(
-      //   "info",
-      //   `[ReplicacheLive] Ensuring clean slate by deleting databases: '${userDbName}' and '${metaDbName}'.`,
-      // );
-
-      // yield* Effect.all([deleteDb(userDbName), deleteDb(metaDbName)], {
-      //   concurrency: "unbounded",
-      //   discard: true,
-      // }).pipe(Effect.catchAll(() => Effect.void));
+    Effect.async<IReplicacheService, Error>((resume) => {
       const client = new Replicache({
         licenseKey: "l2c75a896d85a4914a51e54a32338b556",
         name: user.id,
-        pushURL: "/api/replicache/push",
-        puller: debugPuller,
+        puller,
+        pusher,
         mutators,
       });
 
-      yield* setupWebSocket(client).pipe(Effect.forkDaemon);
-      return { client };
+      client.onOnlineChange = (online: boolean) => {
+        if (online) {
+          client.onOnlineChange = null;
+          runClientUnscoped(setupWebSocket(client).pipe(Effect.forkDaemon));
+          resume(Effect.succeed({ client }));
+        }
+      };
     }),
     ({ client }) =>
       Effect.gen(function* () {
@@ -348,8 +346,11 @@ export const ReplicacheLive = (
         );
         yield* Effect.promise(() => client.close());
       }).pipe(Effect.orDie),
-  ).pipe(Effect.map(({ client }) => ({ client })));
-  return Layer.scoped(ReplicacheService, replicacheServiceEffect).pipe(
-    Layer.provide(RpcLogClientSelfContained),
   );
+
+  // ✅ FIX: Pipe the effect through `orDie` to handle the `Error` channel,
+  // making the resulting Layer's error channel `never`.
+  const scopedEffectWithNoError = replicacheServiceEffect.pipe(Effect.orDie);
+
+  return Layer.scoped(ReplicacheService, scopedEffectWithNoError);
 };

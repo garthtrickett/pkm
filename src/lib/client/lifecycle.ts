@@ -1,7 +1,8 @@
 // FILE: ./src/lib/client/lifecycle.ts
 import { Chunk, Stream, Effect } from "effect";
 import { authState, type AuthModel } from "./stores/authStore";
-import { clientLog, RpcLogClient } from "./clientLog";
+import { clientLog } from "./clientLog";
+import { RpcLogClient } from "./rpc";
 import { LocationService } from "./LocationService";
 import {
   activateReplicacheRuntime,

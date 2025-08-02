@@ -15,12 +15,13 @@ import {
 } from "@effect/platform";
 import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
-import { LocationLive, type LocationService } from "./LocationService";
+import { LocationLive, LocationService } from "./LocationService";
 import {
   RpcAuthClient,
   RpcAuthClientLive,
   RpcLogClientLive,
   RpcLogClient,
+  RpcProtocolLive, // Import the protocol layer
 } from "./rpc";
 import { ReplicacheLive, ReplicacheService } from "./replicache";
 import type { PublicUser } from "../shared/schemas";
@@ -42,16 +43,24 @@ const addJwtMiddleware = (
   ...client, // Inherit all methods from the original client (like .get(), .post())
   // Override the core `execute` method
   execute: (request: HttpClientRequest.HttpClientRequest) => {
+    // We use console.log here for debugging instead of clientLog because clientLog
+    // itself triggers an HTTP request, which would cause an infinite loop by
+    // re-triggering this middleware.
+    console.debug(
+      `[jwtMiddleware] Intercepting request to ${request.url}`,
+      request,
+    );
     const token = localStorage.getItem("jwt");
     if (token) {
-      // If a token exists, add the Authorization header
+      console.debug(
+        "[jwtMiddleware] Token found in localStorage, adding Authorization header.",
+      );
       const updatedRequest = request.pipe(
         HttpClientRequest.setHeader("Authorization", `Bearer ${token}`),
       );
-      // Call the *original* client's execute method with the modified request
       return client.execute(updatedRequest);
     }
-    // Otherwise, call the *original* client's execute method with the original request
+    console.warn("[jwtMiddleware] No token found in localStorage.");
     return client.execute(request);
   },
 });
@@ -78,14 +87,23 @@ export const CustomHttpClientLive = Layer.provide(
   BaseHttpClientLive,
 );
 
-const rpcLayers = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
-const rpcAndHttpLayer = rpcLayers.pipe(
-  Layer.provideMerge(CustomHttpClientLive),
-);
+// ✅ FIX: Correct layer composition
+// Define the layer that provides the RPC clients but still needs the protocol
+const RpcClientsLive = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
+
+// Define the final base layer for the client runtime.
 export const BaseClientLive: Layer.Layer<BaseClientContext> = Layer.mergeAll(
+  // These are the final services we want in our context.
   LocationLive,
-  rpcAndHttpLayer,
+  RpcClientsLive,
+  CustomHttpClientLive,
+).pipe(
+  // Now, provide the dependencies that the above layers need.
+  // RpcClientsLive needs RpcProtocolLive.
+  // RpcProtocolLive needs CustomHttpClientLive.
+  Layer.provide(RpcProtocolLive.pipe(Layer.provide(CustomHttpClientLive))),
 );
+
 const appScope = Effect.runSync(Scope.make());
 
 // The base runtime that is always active and lives for the duration of the app.
@@ -125,6 +143,7 @@ export const activateReplicacheRuntime = (user: PublicUser) =>
       newScope,
     ); //
     clientRuntime = newRuntime; // Atomically swap the active runtime
+
     yield* clientLog(
       "info",
       "<-- [runtime] Replicache runtime activated successfully.",

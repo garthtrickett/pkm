@@ -21,15 +21,23 @@ export const wsHandler = Stream.fromEffect(
 
     // Use the JwtService to validate the token.
     // The Db service is provided to the validation effect.
-    const user = yield* jwtService
-      .validateToken(token)
-      .pipe(Effect.provideService(Db, db));
+    // FIX: Catch validation errors and convert them to proper HTTP responses.
+    const user = yield* jwtService.validateToken(token).pipe(
+      Effect.provideService(Db, db),
+      Effect.catchAll((error) => {
+        if (error._tag === "Unauthorized") {
+          return Effect.fail(
+            HttpServerResponse.text("Invalid or expired token", {
+              status: 401,
+            }),
+          );
+        }
+        return Effect.fail(
+          HttpServerResponse.text("Internal Server Error", { status: 500 }),
+        );
+      }),
+    );
 
-    if (!user) {
-      return yield* Effect.fail(
-        HttpServerResponse.text("Invalid token", { status: 401 }),
-      );
-    }
     yield* Effect.logInfo(
       `WebSocket connection established for user: ${user.id}`,
     );
@@ -42,14 +50,24 @@ export const wsHandler = Stream.fromEffect(
   Effect.as(HttpServerResponse.empty()),
   Effect.catchAllCause((cause) => {
     const failure = Cause.failureOption(cause);
-    if (
-      Option.isSome(failure) &&
-      HttpServerResponse.isServerResponse(failure.value)
-    ) {
-      return Effect.succeed(failure.value);
+
+    if (Option.isSome(failure)) {
+      const error = failure.value;
+      // If it is a response object already, just return it.
+      if (HttpServerResponse.isServerResponse(error)) {
+        return Effect.succeed(error);
+      }
+      // Handle response-like objects that aren't instances of HttpServerResponse (e.g., client disconnects)
+      if (typeof error === "object" && error !== null && "status" in error) {
+        return Effect.succeed(
+          HttpServerResponse.empty({ status: error.status as number }),
+        );
+      }
     }
+
+    // Handle any other unexpected errors.
     return Effect.logError(
-      "Unhandled WebSocket handler error.", //
+      "Unhandled WebSocket handler error.",
       Cause.pretty(cause),
     ).pipe(Effect.andThen(HttpServerResponse.empty({ status: 500 })));
   }),

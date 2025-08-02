@@ -2,6 +2,7 @@
 import {
   HttpRouter,
   HttpServer,
+  HttpMiddleware,
   HttpServerRequest,
   HttpServerResponse,
 } from "@effect/platform";
@@ -124,6 +125,7 @@ const appRouter = HttpRouter.empty.pipe(
   HttpRouter.mountApp("/api/rpc", rpcApp),
   HttpRouter.mountApp("/api/user", userHttpApp),
   HttpRouter.mountApp("/api/replicache", replicacheHttpApp),
+  HttpRouter.use(HttpMiddleware.cors()),
   HttpRouter.get("/ws", wsHandler),
   // Fallback to serving static files for any other GET request
   HttpRouter.get("/*", staticHandler),

@@ -1,7 +1,8 @@
 // src/lib/client/router.ts
 import { Effect } from "effect";
 import { html, type TemplateResult } from "lit-html";
-import { clientLog, RpcLogClient } from "./clientLog";
+import { clientLog } from "./clientLog";
+import { RpcLogClient } from "./rpc";
 import { LocationService } from "./LocationService";
 
 // --- Import page components ---

@@ -16,7 +16,8 @@ import {
   type TiptapDoc,
   type TiptapNode,
 } from "../../lib/shared/schemas";
-import { clientLog, RpcLogClient } from "../../lib/client/clientLog";
+import { clientLog } from "../../lib/client/clientLog";
+import { RpcLogClient } from "../../lib/client/rpc";
 import { v4 as uuidv4 } from "uuid";
 import { ReactiveSamController } from "../../lib/client/reactive-sam-controller";
 import type { LocationService } from "../../lib/client/LocationService";

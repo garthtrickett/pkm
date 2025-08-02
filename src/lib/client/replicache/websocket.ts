@@ -1,9 +1,10 @@
 // FILE: ./src/lib/client/replicache/websocket.ts
 import type { Replicache } from "replicache";
 import { Effect, Schedule, Ref } from "effect";
-import { clientLog, RpcLogClient } from "../clientLog"; // Import RpcLogClient
+import { clientLog } from "../clientLog"; // Import RpcLogClient
 import type { ReplicacheMutators } from "../replicache";
 import { runClientUnscoped } from "../../client/runtime";
+import { RpcLogClient } from "../rpc";
 
 const retryPolicy = Schedule.exponential(1000 /* 1 second base */).pipe(
   Schedule.jittered,

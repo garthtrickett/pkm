@@ -1,23 +1,7 @@
-// src/lib/client/clientLog.ts
-import { RpcClient, RpcSerialization } from "@effect/rpc";
-import { Effect, Layer } from "effect";
-import { RpcLog } from "../shared/log-schema";
+// FILE: ./src/lib/client/clientLog.ts
+import { Effect } from "effect";
 import type { LogLevel } from "../shared/logConfig";
-
-const ProtocolLive = RpcClient.layerProtocolHttp({
-  url: "/api/rpc",
-}).pipe(
-  // Use the standard FetchHttpClient. It will be provided globally by ClientLive.
-  Layer.provide(RpcSerialization.layerJson),
-);
-
-export class RpcLogClient extends Effect.Service<RpcLogClient>()(
-  "RpcLogClient",
-  {
-    dependencies: [ProtocolLive],
-    scoped: RpcClient.make(RpcLog),
-  },
-) {}
+import { RpcLogClient } from "./rpc"; // ✅ FIX: Import the canonical client
 
 export const clientLog = (
   level: Exclude<LogLevel, "silent">,
