@@ -1,4 +1,4 @@
-// src/main.ts
+// FILE: src/main.ts
 import "./styles/index.css";
 import "./components/layouts/app-shell.ts";
 import {
@@ -11,6 +11,9 @@ initializeAuthStore();
 
 // --- Initial Authentication Check ---
 const token = localStorage.getItem("jwt");
+
+// ✅ --- ADD THIS LOG --- ✅
+console.log("🦖 [main.ts] Token from localStorage on startup:", token);
 
 if (!token) {
   // If there's no token, we immediately know the user is unauthenticated.

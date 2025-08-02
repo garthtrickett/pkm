@@ -1,8 +1,8 @@
-// FILE: ./src/lib/client/stores/authStore.ts
+// FILE: src/lib/client/stores/authStore.ts
 import { signal } from "@preact/signals-core";
 import { Effect, Queue, Stream, Runtime } from "effect";
 import type { PublicUser } from "../../shared/schemas";
-import { AppRuntime, runClientUnscoped } from "../runtime";
+import { AppRuntime, runClientUnscoped, BaseClientLive } from "../runtime";
 import { clientLog } from "../clientLog";
 import { RpcAuthClient, RpcLogClient } from "../rpc";
 import { navigate } from "../router";
@@ -30,9 +30,12 @@ type AuthAction =
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
 
 export const proposeAuthAction = (action: AuthAction): void => {
-  runClientUnscoped(
-    clientLog("info", `[authStore] Proposing action: ${action.type}`),
-  );
+  const logEffect = clientLog(
+    "info",
+    `[authStore] Proposing action: ${action.type}`,
+  ).pipe(Effect.provide(BaseClientLive), Effect.scoped);
+
+  runClientUnscoped(logEffect);
   runClientUnscoped(Queue.offer(_actionQueue, action));
 };
 
@@ -54,17 +57,20 @@ const update = (model: AuthModel, action: AuthAction): AuthModel => {
 
 const handleAuthAction = (
   action: AuthAction,
-): Effect.Effect<void, Error, RpcAuthClient | RpcLogClient | LocationService> =>
+): Effect.Effect<void, Error, RpcAuthClient | LocationService | RpcLogClient> =>
   Effect.gen(function* () {
-    const authClient = yield* RpcAuthClient;
-
     switch (action.type) {
       case "AUTH_CHECK_START": {
-        authState.value = update(authState.value, action); // Set to 'authenticating'
+        authState.value = update(authState.value, action);
+
+        // ✅ FIX: Get the RPC client from the context instead of creating a new one.
+        const meEffect = RpcAuthClient.pipe(
+          Effect.flatMap((client) => client.me()),
+        );
 
         yield* Effect.forkDaemon(
           Effect.gen(function* () {
-            const result = yield* Effect.either(authClient.me());
+            const result = yield* Effect.either(meEffect);
             if (result._tag === "Right") {
               proposeAuthAction({
                 type: "SET_AUTHENTICATED",
@@ -78,33 +84,40 @@ const handleAuthAction = (
         break;
       }
       case "SET_AUTHENTICATED": {
-        // The runtimeManager will see this state change and initialize the runtime.
         authState.value = update(authState.value, action);
         break;
       }
       case "SET_UNAUTHENTICATED": {
-        // New case
-        // The runtimeManager will see this state change and shut down the runtime.
         authState.value = update(authState.value, action);
         break;
       }
       case "LOGOUT_START": {
         authState.value = update(authState.value, action);
-        yield* Effect.either(authClient.logout());
+
+        // ✅ FIX: Get the RPC client from the context.
+        const logoutEffect = RpcAuthClient.pipe(
+          Effect.flatMap((client) => client.logout()),
+        );
+
+        yield* Effect.either(logoutEffect);
         proposeAuthAction({ type: "LOGOUT_SUCCESS" });
         break;
       }
 
       case "LOGOUT_SUCCESS": {
-        yield* clientLog(
-          "info",
-          "[authStore] LOGOUT_SUCCESS: updating state and cleaning up.",
-        );
-        localStorage.removeItem("jwt");
-        document.cookie =
-          "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-        authState.value = update(authState.value, action);
-        yield* navigate("/login");
+        const logoutSuccessEffect = Effect.gen(function* () {
+          yield* clientLog(
+            "info",
+            "[authStore] LOGOUT_SUCCESS: updating state and cleaning up.",
+          );
+          localStorage.removeItem("jwt");
+          document.cookie =
+            "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+          authState.value = update(authState.value, action);
+          yield* navigate("/login");
+        });
+
+        yield* logoutSuccessEffect;
         break;
       }
     }
