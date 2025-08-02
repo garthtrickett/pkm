@@ -1,4 +1,4 @@
-// src/features/replicache/pull.ts
+// FILE: src/features/replicache/pull.ts
 import { Data, Effect, Schema } from "effect";
 import type { Transaction } from "kysely";
 import { Db } from "../../db/DbTag";
@@ -9,7 +9,7 @@ import type {
   PullRequest,
   PullResponse,
 } from "../../lib/shared/replicache-schemas";
-import type { BlockId, NoteId, User } from "../../lib/shared/schemas";
+import type { BlockId, NoteId, PublicUser } from "../../lib/shared/schemas";
 import type { Database } from "../../types";
 import type { ClientViewRecordId } from "../../types/generated/public/ClientViewRecord";
 import type { ReplicacheClientGroupId } from "../../types/generated/public/ReplicacheClientGroup";
@@ -21,10 +21,9 @@ class PullDatabaseError extends Data.TaggedError("PullDatabaseError")<{
 const pullLogicEffect = (
   trx: Transaction<Database>,
   req: PullRequest,
-  user: User,
+  user: PublicUser,
 ): Effect.Effect<PullResponse, PullDatabaseError> =>
   Effect.gen(function* () {
-    // ✅ --- THIS IS THE FIX ---
     // Ensure the client group exists before proceeding.
     // Using `onConflict...doNothing()` makes this an atomic "upsert".
     yield* Effect.tryPromise({
@@ -41,7 +40,6 @@ const pullLogicEffect = (
           .execute(),
       catch: (cause) => new PullDatabaseError({ cause }),
     });
-    // ✅ --- END OF FIX ---
 
     const fromVersion = req.cookie ?? 0;
 
@@ -127,9 +125,6 @@ const pullLogicEffect = (
     // 5. Get patch operations from all registered entities in parallel.
     const patchOperations = yield* Effect.all(
       syncableEntities.map((entity) => {
-        // ✅ THIS IS THE FIX ✅
-        // We tell TypeScript to treat the array of branded IDs as a simple
-        // `readonly string[]`, which the `Set` constructor can handle.
         const newIds = new Set(
           newCVRData[entity.keyInCVR] as readonly string[],
         );

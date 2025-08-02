@@ -1,7 +1,7 @@
 // src/lib/shared/auth.ts
 import { Context, Schema } from "effect";
 import { RpcMiddleware } from "@effect/rpc";
-import type { User } from "./schemas";
+import type { PublicUser } from "./schemas";
 import type { Session } from "../../types/generated/public/Session";
 
 /**
@@ -11,7 +11,7 @@ import type { Session } from "../../types/generated/public/Session";
  */
 export class Auth extends Context.Tag("Auth")<
   Auth,
-  { readonly user: User | null; readonly session: Session | null }
+  { readonly user: PublicUser | null; readonly session: Session | null }
 >() {}
 
 /**
@@ -19,9 +19,6 @@ export class Auth extends Context.Tag("Auth")<
  * This is part of the public API contract for protected routes.
  * The `_tag` allows for discriminating between different kinds of auth errors.
  */
-// ✅ THIS IS THE FIX ✅
-// By specifying the exact possible values for `_tag`, we create a true
-// discriminated union that TypeScript can use for type narrowing.
 export class AuthError extends Schema.Class<AuthError>("AuthError")({
   _tag: Schema.Literal(
     "Unauthorized",
@@ -29,7 +26,7 @@ export class AuthError extends Schema.Class<AuthError>("AuthError")({
     "BadRequest",
     "EmailAlreadyExistsError",
     "InternalServerError",
-  ),
+  ), //
   message: Schema.String,
 }) {}
 
@@ -37,9 +34,9 @@ export class AuthError extends Schema.Class<AuthError>("AuthError")({
  * Defines the RPC Middleware Tag for authentication.
  * This acts as an identifier for the authentication middleware.
  * It specifies that this middleware will:
- *  - Not wrap the RPC handler (`wrap: false`).
- *  - Provide the `Auth` service to the handler's context.
- *  - Can fail with an `AuthError`.
+ * - Not wrap the RPC handler (`wrap: false`).
+ * - Provide the `Auth` service to the handler's context.
+ * - Can fail with an `AuthError`.
  *
  * The actual implementation (the Layer) for this tag resides exclusively on the server.
  */
@@ -48,6 +45,6 @@ export class AuthMiddleware extends RpcMiddleware.Tag<AuthMiddleware>()(
   {
     wrap: false,
     provides: Auth,
-    failure: AuthError, // Use the unified AuthError schema
+    failure: AuthError, //
   },
 ) {}

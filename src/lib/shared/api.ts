@@ -7,7 +7,7 @@ import { AuthMiddleware, AuthError } from "./auth";
 export { AuthError };
 
 export class RequestError extends Schema.Class<RequestError>("RequestError")({
-  errorMessage: Schema.String,
+  errorMessage: Schema.String, //
 }) {}
 
 // --- Payload Schemas and Types ---
@@ -24,7 +24,7 @@ export const SignupPayloadSchema = Schema.Struct({
 export type SignupPayload = Schema.Schema.Type<typeof SignupPayloadSchema>;
 
 export const VerifyEmailPayloadSchema = Schema.Struct({
-  token: Schema.String,
+  token: Schema.String, //
 });
 export type VerifyEmailPayload = Schema.Schema.Type<
   typeof VerifyEmailPayloadSchema
@@ -48,7 +48,7 @@ export type ResetPasswordPayload = Schema.Schema.Type<
 export const ChangePasswordPayloadSchema = Schema.Struct({
   oldPassword: Schema.String,
   newPassword: Schema.String.pipe(Schema.minLength(8)),
-});
+}); //
 export type ChangePasswordPayload = Schema.Schema.Type<
   typeof ChangePasswordPayloadSchema
 >;
@@ -60,7 +60,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("login", {
     success: Schema.Struct({
       user: PublicUserSchema,
-      sessionId: Schema.String,
+      token: Schema.String, //
     }),
     error: AuthError,
     payload: LoginPayloadSchema,
@@ -75,7 +75,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("verifyEmail", {
     success: Schema.Struct({
       user: PublicUserSchema,
-      sessionId: Schema.String,
+      token: Schema.String, //
     }),
     error: AuthError,
     payload: VerifyEmailPayloadSchema,
@@ -84,7 +84,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
   Rpc.make("requestPasswordReset", {
     success: Schema.Void,
     error: AuthError,
-    payload: RequestPasswordResetPayloadSchema,
+    payload: RequestPasswordResetPayloadSchema, //
   }),
 
   Rpc.make("resetPassword", {
@@ -98,7 +98,7 @@ const UnprotectedAuthRpc = RpcGroup.make(
 const ProtectedAuthRpc = RpcGroup.make(
   Rpc.make("me", {
     success: PublicUserSchema,
-    error: AuthError,
+    error: AuthError, //
   }),
   Rpc.make("logout", {
     success: Schema.Void,
@@ -112,4 +112,4 @@ const ProtectedAuthRpc = RpcGroup.make(
 ).middleware(AuthMiddleware);
 
 // The final exported group merges only the auth-related RPCs.
-export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc);
+export const AuthRpc = UnprotectedAuthRpc.merge(ProtectedAuthRpc); //

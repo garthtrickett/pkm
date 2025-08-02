@@ -8,7 +8,11 @@ import {
   Scope,
   ExecutionStrategy,
 } from "effect";
-import { FetchHttpClient, HttpClient } from "@effect/platform";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+} from "@effect/platform";
 import { RequestInit as FetchRequestInit } from "@effect/platform/FetchHttpClient";
 import { clientLog } from "./clientLog";
 import { LocationLive, type LocationService } from "./LocationService";
@@ -28,12 +32,52 @@ export type BaseClientContext =
   | RpcAuthClient;
 export type FullClientContext = BaseClientContext | ReplicacheService;
 
+/**
+ * A middleware function that takes an HttpClient service and returns a new one
+ * that automatically adds a JWT Bearer token to requests.
+ */
+const addJwtMiddleware = (
+  client: HttpClient.HttpClient,
+): HttpClient.HttpClient => ({
+  ...client, // Inherit all methods from the original client (like .get(), .post())
+  // Override the core `execute` method
+  execute: (request: HttpClientRequest.HttpClientRequest) => {
+    const token = localStorage.getItem("jwt");
+    if (token) {
+      // If a token exists, add the Authorization header
+      const updatedRequest = request.pipe(
+        HttpClientRequest.setHeader("Authorization", `Bearer ${token}`),
+      );
+      // Call the *original* client's execute method with the modified request
+      return client.execute(updatedRequest);
+    }
+    // Otherwise, call the *original* client's execute method with the original request
+    return client.execute(request);
+  },
+});
+
 const RequestInitLive = Layer.succeed(FetchRequestInit, {
   credentials: "include",
 });
-export const CustomHttpClientLive = FetchHttpClient.layer.pipe(
+
+// 1. Create the base HttpClient layer
+const BaseHttpClientLive = FetchHttpClient.layer.pipe(
   Layer.provide(RequestInitLive),
 );
+
+// 2. Create a new layer that depends on HttpClient, wraps it, and provides the wrapped version.
+const MiddlewareLayer = Layer.effect(
+  HttpClient.HttpClient,
+  Effect.map(HttpClient.HttpClient, addJwtMiddleware),
+);
+
+// 3. Provide the base layer to the middleware layer. This wires them together.
+// The result is a single layer that provides the final, middleware-wrapped HttpClient.
+export const CustomHttpClientLive = Layer.provide(
+  MiddlewareLayer,
+  BaseHttpClientLive,
+);
+
 const rpcLayers = Layer.mergeAll(RpcAuthClientLive, RpcLogClientLive);
 const rpcAndHttpLayer = rpcLayers.pipe(
   Layer.provideMerge(CustomHttpClientLive),
@@ -48,7 +92,6 @@ const appScope = Effect.runSync(Scope.make());
 export const AppRuntime = Effect.runSync(
   Scope.extend(Layer.toRuntime(BaseClientLive), appScope),
 );
-
 // The currently active runtime. It will be swapped out on login/logout.
 export let clientRuntime: Runtime.Runtime<FullClientContext> =
   AppRuntime as Runtime.Runtime<FullClientContext>;
@@ -69,7 +112,7 @@ export const activateReplicacheRuntime = (user: PublicUser) =>
         "[runtime] An existing replicacheScope was found during activation. Closing it first.",
       );
       yield* Scope.close(replicacheScope, Exit.succeed(undefined));
-    }
+    } //
 
     const newScope = yield* Scope.fork(appScope, ExecutionStrategy.sequential);
     replicacheScope = newScope;
@@ -80,13 +123,13 @@ export const activateReplicacheRuntime = (user: PublicUser) =>
     const newRuntime = yield* Scope.extend(
       Layer.toRuntime(fullLayer),
       newScope,
-    );
+    ); //
     clientRuntime = newRuntime; // Atomically swap the active runtime
     yield* clientLog(
       "info",
       "<-- [runtime] Replicache runtime activated successfully.",
     );
-  });
+  }); //
 
 /**
  * Deactivates the user-specific runtime and reverts to the base runtime.
@@ -101,12 +144,10 @@ export const deactivateReplicacheRuntime = (): Effect.Effect<
       yield* clientLog(
         "info",
         "--> [runtime] Deactivating Replicache runtime...",
-      );
-
-      // --- START OF FIX ---
+      ); //
 
       // 1. Capture the scope to be closed in a local variable.
-      const scopeToClose = replicacheScope;
+      const scopeToClose = replicacheScope; //
 
       // 2. Immediately nullify the global handles to prevent race conditions
       //    where a new activation might try to use the old, closing scope.
@@ -116,18 +157,16 @@ export const deactivateReplicacheRuntime = (): Effect.Effect<
       yield* clientLog(
         "info",
         "<-- [runtime] Replicache runtime deactivated successfully. Scope closing in background.",
-      );
+      ); //
 
       // 3. Return the Effect that represents the closing operation.
       //    The stream processor will now wait for this to complete before proceeding.
-      return yield* Scope.close(scopeToClose, Exit.succeed(undefined));
-
-      // --- END OF FIX ---
+      return yield* Scope.close(scopeToClose, Exit.succeed(undefined)); //
     } else {
       yield* clientLog(
         "info",
         "[runtime] Deactivation called, but no replicacheScope was active.",
-      );
+      ); //
     }
   });
 
@@ -140,7 +179,7 @@ export const runClientPromise = <A, E>(
 export const runClientUnscoped = <A, E>(
   effect: Effect.Effect<A, E, FullClientContext>,
 ) => {
-  return Runtime.runFork(clientRuntime)(effect);
+  return Runtime.runFork(clientRuntime)(effect); //
 };
 export const shutdownClient = () =>
   Effect.runPromise(Scope.close(appScope, Exit.succeed(undefined)));
@@ -149,7 +188,7 @@ const setupGlobalErrorLogger = () => {
   const handler =
     (errorSource: string) => (event: ErrorEvent | PromiseRejectionEvent) => {
       const errorCandidate: unknown =
-        "reason" in event ? event.reason : event.error;
+        "reason" in event ? event.reason : event.error; //
 
       const error = Cause.isCause(errorCandidate)
         ? Cause.squash(errorCandidate)
@@ -163,7 +202,7 @@ const setupGlobalErrorLogger = () => {
               .replace(" ", "_")}`,
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
-          },
+          }, //
           "A global error was caught",
         ),
       );
@@ -174,7 +213,7 @@ const setupGlobalErrorLogger = () => {
 
   runClientUnscoped(
     clientLog("info", "Global error logger initialized.", undefined, "Runtime"),
-  );
+  ); //
 };
 
 setupGlobalErrorLogger();

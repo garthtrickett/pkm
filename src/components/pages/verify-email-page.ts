@@ -27,7 +27,7 @@ type Action =
   | { type: "VERIFY_START" }
   | {
       type: "VERIFY_SUCCESS";
-      payload: { user: PublicUser; sessionId: string };
+      payload: { user: PublicUser; token: string };
     }
   | { type: "VERIFY_ERROR"; payload: VerifyEmailError };
 
@@ -92,10 +92,8 @@ export class VerifyEmailPage extends LitElement {
             type: "VERIFY_SUCCESS",
             payload: successPayload,
           });
-          const { user, sessionId } = successPayload;
-          const expires = new Date();
-          expires.setDate(expires.getDate() + 30);
-          document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+          const { user, token } = successPayload;
+          localStorage.setItem("jwt", token);
           proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
 
           runClientUnscoped(
@@ -107,7 +105,7 @@ export class VerifyEmailPage extends LitElement {
                   "Navigation failed after email verification",
                   cause,
                 ),
-              ),
+              ), //
             ),
           );
         },

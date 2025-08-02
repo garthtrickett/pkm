@@ -9,8 +9,7 @@ import type {
 import { AuthError } from "../../../lib/shared/auth";
 import { Db } from "../../../db/DbTag";
 import { Crypto } from "../../../lib/server/crypto";
-// ✅ IMPORT: Import session logic from the new, dedicated service file.
-import { createSessionEffect } from "../../../lib/server/session.service";
+import { JwtService } from "../../../lib/server/JwtService";
 import {
   EmailAlreadyExistsError,
   PasswordHashingError,
@@ -35,7 +34,7 @@ export const RegistrationRpcHandlers = {
           .select("id")
           .where("email", "=", credentials.email)
           .executeTakeFirst(),
-      );
+      ); //
 
       if (existingUser) {
         return yield* Effect.fail(new EmailAlreadyExistsError());
@@ -45,19 +44,19 @@ export const RegistrationRpcHandlers = {
       const passwordHash = yield* Effect.tryPromise({
         try: () => argon2id.hash(credentials.password),
         catch: (cause) => new PasswordHashingError({ cause }),
-      });
+      }); //
 
       const newUser = yield* Effect.promise(() =>
         db
           .insertInto("user")
           .values({
             email: credentials.email,
-            password_hash: passwordHash,
+            password_hash: passwordHash, //
             email_verified: false,
           })
           .returningAll()
           .executeTakeFirstOrThrow(),
-      );
+      ); //
       yield* Effect.logInfo(
         { userId: newUser.id, email: newUser.email },
         "User created successfully",
@@ -65,7 +64,7 @@ export const RegistrationRpcHandlers = {
       const verificationToken = yield* createVerificationToken(
         newUser.id,
         newUser.email,
-      ).pipe(Effect.provideService(Crypto, crypto));
+      ).pipe(Effect.provideService(Crypto, crypto)); //
       yield* sendVerificationEmail(newUser.email, verificationToken);
 
       const { password_hash: _, ...publicUser } = newUser;
@@ -77,7 +76,7 @@ export const RegistrationRpcHandlers = {
             new AuthError({
               _tag: "EmailAlreadyExistsError",
               message: "A user with this email already exists.",
-            }),
+            }), //
           ),
         PasswordHashingError: (error) =>
           Effect.logError("Password hashing failed during signup", error).pipe(
@@ -86,10 +85,10 @@ export const RegistrationRpcHandlers = {
                 new AuthError({
                   _tag: "InternalServerError",
                   message: "Could not process registration.",
-                }),
+                }), //
               ),
             ),
-          ),
+          ), //
       }),
       Effect.catchAll((error) => {
         if (error instanceof AuthError) {
@@ -101,7 +100,7 @@ export const RegistrationRpcHandlers = {
               new AuthError({
                 _tag: "InternalServerError",
                 message: "An internal server error occurred.",
-              }),
+              }), //
             ),
           ),
         );
@@ -115,14 +114,14 @@ export const RegistrationRpcHandlers = {
         "Email verification attempt",
       );
       const db = yield* Db;
-      const crypto = yield* Crypto;
+      const jwtService = yield* JwtService;
       const storedToken = yield* Effect.promise(() =>
         db
           .deleteFrom("email_verification_token")
           .where("id", "=", token as EmailVerificationTokenId)
           .returningAll()
           .executeTakeFirst(),
-      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
+      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause }))); //
       if (!storedToken || !isWithinExpirationDate(storedToken.expires_at)) {
         return yield* Effect.fail(
           new TokenInvalidError({ cause: "Token not found or expired" }),
@@ -136,14 +135,12 @@ export const RegistrationRpcHandlers = {
           .where("id", "=", storedToken.user_id)
           .returningAll()
           .executeTakeFirstOrThrow(),
-      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause })));
+      ).pipe(Effect.mapError((cause) => new TokenInvalidError({ cause }))); //
       yield* Effect.logInfo({ userId: user.id }, "Email verified successfully");
 
-      const sessionId = yield* createSessionEffect(user.id).pipe(
-        Effect.provideService(Crypto, crypto),
-      );
       const { password_hash: _, ...publicUser } = user;
-      return { user: publicUser, sessionId };
+      const jwtToken = yield* jwtService.generateToken(publicUser);
+      return { user: publicUser, token: jwtToken };
     }).pipe(
       Effect.catchTags({
         TokenInvalidError: () =>
@@ -151,34 +148,26 @@ export const RegistrationRpcHandlers = {
             new AuthError({
               _tag: "BadRequest",
               message: "Invalid or expired verification token.",
-            }),
+            }), //
           ),
-      }),
-      // ✅ FIX: Add a check to pass through existing AuthErrors
+      }), //
       Effect.catchAll((error) => {
-        // [!code focus]
         if (error instanceof AuthError) {
-          // [!code focus]
-          return Effect.fail(error); // [!code focus]
-        } // [!code focus]
+          return Effect.fail(error); //
+        } //
         return Effect.logError(
-          // [!code focus]
-          "Unhandled error during email verification", // [!code focus]
-          error, // [!code focus]
+          "Unhandled error during email verification", //
+          error, //
         ).pipe(
-          // [!code focus]
           Effect.andThen(
-            // [!code focus]
             Effect.fail(
-              // [!code focus]
               new AuthError({
-                // [!code focus]
-                _tag: "InternalServerError", // [!code focus]
-                message: "An internal server error occurred.", // [!code focus]
-              }), // [!code focus]
-            ), // [!code focus]
-          ), // [!code focus]
-        ); // [!code focus]
-      }), // [!code focus]
+                _tag: "InternalServerError", //
+                message: "An internal server error occurred.", //
+              }), //
+            ), //
+          ), //
+        ); //
+      }), //
     ),
 };

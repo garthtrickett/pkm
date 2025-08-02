@@ -1,6 +1,6 @@
 // FILE: src/features/auth/handlers/registration.handler.verifyEmail.test.ts
-import { vi } from "vitest"; // [!code ++]
-import { describe, it, expect, afterEach } from "@effect/vitest"; // [!code ++]
+import { vi } from "vitest";
+import { describe, it, expect, afterEach } from "@effect/vitest";
 import { Effect, Layer, Either } from "effect";
 import { RegistrationRpcHandlers } from "./registration.handler";
 import { Db } from "../../../db/DbTag";
@@ -11,15 +11,20 @@ import type {
   EmailVerificationToken,
   EmailVerificationTokenId,
 } from "../../../types/generated/public/EmailVerificationToken";
+import { JwtService } from "../../../lib/server/JwtService";
 
 // --- Mocks ---
-const { createSessionEffect } = vi.hoisted(() => ({
-  createSessionEffect: vi.fn(() => Effect.succeed("mock_session_id")),
+const { mockGenerateToken } = vi.hoisted(() => ({
+  mockGenerateToken: vi.fn(() => Effect.succeed("mock_jwt_token")),
 }));
 
-vi.mock("../../../lib/server/session.service.ts", () => ({
-  createSessionEffect,
-}));
+const MockJwtServiceLive = Layer.succeed(
+  JwtService,
+  JwtService.of({
+    generateToken: mockGenerateToken,
+    validateToken: vi.fn(),
+  }),
+);
 
 // --- Test Data ---
 const mockUser: User = {
@@ -81,7 +86,7 @@ describe("Auth Handlers: verifyEmail", () => {
   });
 
   it.effect(
-    "[success] given a valid, unexpired token, it marks the user as verified and returns a session",
+    "[success] given a valid, unexpired token, it marks the user as verified and returns a JWT",
     () =>
       Effect.gen(function* () {
         const updatedUser = { ...mockUser, email_verified: true };
@@ -89,17 +94,21 @@ describe("Auth Handlers: verifyEmail", () => {
 
         const runnable = RegistrationRpcHandlers.verifyEmail({
           token: "valid_token",
-        }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+        }).pipe(
+          Effect.provide(MockDbLive),
+          Effect.provide(CryptoTestLive),
+          Effect.provide(MockJwtServiceLive),
+        );
 
         const result = yield* Effect.either(runnable);
 
         expect(Either.isRight(result)).toBe(true);
         if (Either.isRight(result)) {
-          const { user, sessionId } = result.right;
+          const { user, token } = result.right;
           expect(user.id).toBe(mockUser.id);
           expect(user.email_verified).toBe(true);
-          expect(sessionId).toBe("mock_session_id");
-          expect(createSessionEffect).toHaveBeenCalledWith(mockUser.id);
+          expect(token).toBe("mock_jwt_token");
+          expect(mockGenerateToken).toHaveBeenCalledWith(user);
         }
       }),
   );
@@ -127,7 +136,11 @@ describe("Auth Handlers: verifyEmail", () => {
 
           const runnable = RegistrationRpcHandlers.verifyEmail({
             token: "any_token",
-          }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+          }).pipe(
+            Effect.provide(MockDbLive),
+            Effect.provide(CryptoTestLive),
+            Effect.provide(MockJwtServiceLive),
+          );
 
           const result = yield* Effect.either(runnable);
 

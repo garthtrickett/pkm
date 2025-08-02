@@ -1,15 +1,11 @@
-// src/features/auth/handlers/session.handler.ts
+// FILE: src/features/auth/handlers/session.handler.ts
 import { Effect } from "effect";
 import { Argon2id } from "oslo/password";
 import type { LoginPayload } from "../../../lib/shared/api";
 import { Auth, AuthError } from "../../../lib/shared/auth";
-// ✅ IMPORT: Import session logic from the new, dedicated service file.
-import {
-  createSessionEffect,
-  deleteSessionEffect,
-} from "../../../lib/server/session.service";
 import { Db } from "../../../db/DbTag";
 import { InvalidCredentialsError, EmailNotVerifiedError } from "../Errors";
+import { JwtService } from "../../../lib/server/JwtService";
 
 export const SessionRpcHandlers = {
   login: (credentials: LoginPayload) =>
@@ -19,6 +15,7 @@ export const SessionRpcHandlers = {
         "Login handler started",
       );
       const db = yield* Db;
+      const jwtService = yield* JwtService;
 
       const user = yield* Effect.promise(() =>
         db
@@ -26,18 +23,18 @@ export const SessionRpcHandlers = {
           .selectAll()
           .where("email", "=", credentials.email)
           .executeTakeFirst(),
-      );
+      ); //
 
       yield* Effect.logDebug(
         { userFound: !!user },
         "User lookup result from DB",
-      );
+      ); //
 
       if (!user) {
         yield* Effect.logWarning(
           { email: credentials.email },
           "User not found in DB",
-        );
+        ); //
         return yield* Effect.fail(new InvalidCredentialsError());
       }
 
@@ -48,7 +45,7 @@ export const SessionRpcHandlers = {
           Effect.logError("Password verification failed with an error", e);
           return false;
         },
-      });
+      }); //
 
       yield* Effect.logDebug({ validPassword }, "Password verification result");
 
@@ -56,32 +53,32 @@ export const SessionRpcHandlers = {
         yield* Effect.logWarning(
           { email: user.email },
           "Invalid password provided",
-        );
+        ); //
         return yield* Effect.fail(new InvalidCredentialsError());
       }
 
       yield* Effect.logDebug(
         { isVerified: user.email_verified },
         "Email verification check",
-      );
+      ); //
 
       if (!user.email_verified) {
         yield* Effect.logWarning(
           { email: user.email },
           "Login attempt with unverified email",
-        );
+        ); //
         return yield* Effect.fail(new EmailNotVerifiedError());
       }
 
-      const sessionId = yield* createSessionEffect(user.id);
+      const { password_hash: _, ...publicUser } = user;
+      const token = yield* jwtService.generateToken(publicUser);
 
       yield* Effect.logInfo(
-        { userId: user.id, sessionId },
-        "Login successful, session created",
+        { userId: user.id },
+        "Login successful, JWT created",
       );
 
-      const { password_hash: _, ...publicUser } = user;
-      return { user: publicUser, sessionId };
+      return { user: publicUser, token };
     }).pipe(
       Effect.catchTags({
         InvalidCredentialsError: () => {
@@ -93,10 +90,10 @@ export const SessionRpcHandlers = {
                 new AuthError({
                   _tag: "Unauthorized",
                   message: "Invalid credentials",
-                }),
+                }), //
               ),
             ),
-          );
+          ); //
         },
         EmailNotVerifiedError: () => {
           return Effect.logDebug(
@@ -107,10 +104,10 @@ export const SessionRpcHandlers = {
                 new AuthError({
                   _tag: "Forbidden",
                   message: "Email not verified",
-                }),
+                }), //
               ),
             ),
-          );
+          ); //
         },
       }),
       Effect.catchAll((error) => {
@@ -118,7 +115,7 @@ export const SessionRpcHandlers = {
           return Effect.logDebug(
             "[login.handler] Passing through intentional AuthError to client.",
             { error },
-          ).pipe(Effect.andThen(Effect.fail(error)));
+          ).pipe(Effect.andThen(Effect.fail(error))); //
         }
         return Effect.logError("Unhandled error during login", {
           cause: error,
@@ -129,7 +126,7 @@ export const SessionRpcHandlers = {
               new AuthError({
                 _tag: "InternalServerError",
                 message: "An internal server error occurred.",
-              }),
+              }), //
             ),
           ),
         );
@@ -139,23 +136,15 @@ export const SessionRpcHandlers = {
   me: () =>
     Effect.gen(function* () {
       const { user } = yield* Auth;
-      yield* Effect.logDebug({ userId: user!.id }, `'me' request successful`);
-      const { password_hash: _, ...publicUser } = user!;
-      return publicUser;
+      yield* Effect.logDebug({ userId: user!.id }, `'me' request successful`); //
+      return user!;
     }),
 
-  logout: () =>
+  logout: (): Effect.Effect<void, AuthError, Auth> =>
     Effect.gen(function* () {
-      const { session } = yield* Auth;
-      yield* Effect.logInfo(
-        { userId: session!.user_id },
-        `User initiated logout`,
-      );
-
-      yield* deleteSessionEffect(session!.id).pipe(
-        Effect.catchAll((err) =>
-          Effect.logError("Failed to delete session on logout", err),
-        ),
-      );
+      const { user } = yield* Auth;
+      if (user) {
+        yield* Effect.logInfo({ userId: user.id }, `User initiated logout`);
+      }
     }),
 };

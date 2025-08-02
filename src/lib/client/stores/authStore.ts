@@ -30,7 +30,8 @@ type AuthAction =
   | { type: "AUTH_CHECK_FAILURE"; payload: AuthError | AuthCheckError }
   | { type: "LOGOUT_START" }
   | { type: "LOGOUT_SUCCESS" }
-  | { type: "SET_AUTHENTICATED"; payload: PublicUser };
+  | { type: "SET_AUTHENTICATED"; payload: PublicUser }
+  | { type: "SET_UNAUTHENTICATED" }; // New action
 
 const _actionQueue = Effect.runSync(Queue.unbounded<AuthAction>());
 
@@ -55,6 +56,8 @@ const update = (model: AuthModel, action: AuthAction): AuthModel => {
       return { status: "unauthenticated", user: null };
     case "SET_AUTHENTICATED":
       return { status: "authenticated", user: action.payload };
+    case "SET_UNAUTHENTICATED": // New case
+      return { status: "unauthenticated", user: null };
     default:
       return model;
   }
@@ -89,7 +92,9 @@ const handleAuthAction = (
         authState.value = update(authState.value, action);
         break;
       }
-      case "AUTH_CHECK_FAILURE": {
+      case "AUTH_CHECK_FAILURE":
+      case "SET_UNAUTHENTICATED": {
+        // New case
         // The runtimeManager will see this state change and shut down the runtime.
         authState.value = update(authState.value, action);
         break;
@@ -110,18 +115,21 @@ const handleAuthAction = (
         const logoutCleanup = Effect.gen(function* () {
           yield* clientLog("info", "--> [logoutCleanup] Starting.");
 
-          // 1. Clear the session cookie
+          // 1. Clear the JWT from localStorage
+          localStorage.removeItem("jwt");
+
+          // 2. Clear the old session cookie for good measure
           document.cookie =
             "session_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 
-          // 2. Update the application's auth state.
+          // 3. Update the application's auth state.
           authState.value = update(authState.value, action);
           yield* clientLog(
             "info",
             "[logoutCleanup] Auth state updated to unauthenticated. The runtimeManager will now handle resource cleanup.",
-          );
+          ); //
 
-          // 3. Redirect the user
+          // 4. Redirect the user
           yield* navigate("/login");
           yield* clientLog("info", "<-- [logoutCleanup] Complete.");
         }).pipe(
@@ -147,7 +155,7 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
         ),
       ),
     ),
-  ),
+  ), //
 );
 
 /**
@@ -157,5 +165,4 @@ const authProcess = Stream.fromQueue(_actionQueue).pipe(
 
 export const initializeAuthStore = (): void => {
   Runtime.runFork(AppRuntime)(authProcess);
-  // REMOVED: proposeAuthAction({ type: "AUTH_CHECK_START" });
 };

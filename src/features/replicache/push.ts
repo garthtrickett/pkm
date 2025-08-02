@@ -1,4 +1,4 @@
-// src/features/replicache/push.ts
+// FILE: src/features/replicache/push.ts
 import { Data, Effect, Schema } from "effect";
 import type { PushRequest } from "../../lib/shared/replicache-schemas";
 import { Db } from "../../db/DbTag";
@@ -8,7 +8,7 @@ import type { ReplicacheClientGroupId } from "../../types/generated/public/Repli
 import type { Database } from "../../types";
 import type { Kysely } from "kysely";
 import { PokeService } from "../../lib/server/PokeService";
-import type { User } from "../../lib/shared/schemas";
+import type { PublicUser } from "../../lib/shared/schemas";
 import {
   CreateNoteArgsSchema,
   DeleteNoteArgsSchema,
@@ -67,7 +67,7 @@ const applyMutation = (mutation: PushRequest["mutations"][number]) =>
 const processMutations = (
   mutations: PushRequest["mutations"],
   clientGroupID: PushRequest["clientGroupID"],
-  user: User,
+  user: PublicUser,
 ): Effect.Effect<void, Error, Db> =>
   Effect.forEach(
     mutations,

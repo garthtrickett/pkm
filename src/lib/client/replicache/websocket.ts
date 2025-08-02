@@ -5,12 +5,6 @@ import { clientLog, RpcLogClient } from "../clientLog"; // Import RpcLogClient
 import type { ReplicacheMutators } from "../replicache";
 import { runClientUnscoped } from "../../client/runtime";
 
-const getCookie = (name: string): string | undefined => {
-  const value = `; ${document.cookie}`;
-  const parts = value.split(`; ${name}=`);
-  if (parts.length === 2) return parts.pop()?.split(";").shift();
-};
-
 const retryPolicy = Schedule.exponential(1000 /* 1 second base */).pipe(
   Schedule.jittered,
 );
@@ -20,15 +14,15 @@ export const setupWebSocket = (
   // ✅ FIX: The function's return type now correctly states its requirement for RpcLogClient.
 ): Effect.Effect<never, Error, RpcLogClient> =>
   Effect.gen(function* () {
-    const sessionId = getCookie("session_id");
-    if (!sessionId) {
+    const token = localStorage.getItem("jwt");
+    if (!token) {
       return yield* Effect.fail(
-        new Error("No session_id cookie found for WebSocket connection."),
+        new Error("No JWT found for WebSocket connection."),
       );
     }
     const wsUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${
       window.location.host
-    }/ws?sessionId=${sessionId}`;
+    }/ws?token=${token}`;
 
     const wsRef = yield* Ref.make<WebSocket | null>(null);
 

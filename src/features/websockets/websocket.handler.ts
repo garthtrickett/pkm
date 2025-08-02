@@ -1,25 +1,33 @@
 // FILE: src/features/websockets/websocket.handler.ts
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform";
 import { Cause, Effect, Option, Stream } from "effect";
-// ✅ IMPORT: Import session logic from the new, dedicated service file.
-import { validateSessionEffect } from "../../lib/server/session.service";
 import { PokeService } from "../../lib/server/PokeService";
+import { JwtService } from "../../lib/server/JwtService";
+import { Db } from "../../db/DbTag";
 
 export const wsHandler = Stream.fromEffect(
   Effect.gen(function* () {
     const pokeService = yield* PokeService;
+    const jwtService = yield* JwtService;
+    const db = yield* Db;
     const req = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    const sessionId = url.searchParams.get("sessionId");
-    if (!sessionId) {
+    const token = url.searchParams.get("token");
+    if (!token) {
       return yield* Effect.fail(
-        HttpServerResponse.text("No session ID", { status: 401 }),
+        HttpServerResponse.text("No token provided", { status: 401 }),
       );
     }
-    const { user } = yield* validateSessionEffect(sessionId);
+
+    // Use the JwtService to validate the token.
+    // The Db service is provided to the validation effect.
+    const user = yield* jwtService
+      .validateToken(token)
+      .pipe(Effect.provideService(Db, db));
+
     if (!user) {
       return yield* Effect.fail(
-        HttpServerResponse.text("Invalid session", { status: 401 }),
+        HttpServerResponse.text("Invalid token", { status: 401 }),
       );
     }
     yield* Effect.logInfo(
@@ -41,7 +49,7 @@ export const wsHandler = Stream.fromEffect(
       return Effect.succeed(failure.value);
     }
     return Effect.logError(
-      "Unhandled WebSocket handler error.",
+      "Unhandled WebSocket handler error.", //
       Cause.pretty(cause),
     ).pipe(Effect.andThen(HttpServerResponse.empty({ status: 500 })));
   }),

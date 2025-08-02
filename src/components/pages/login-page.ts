@@ -31,7 +31,7 @@ type Action =
   | { type: "UPDATE_EMAIL"; payload: string }
   | { type: "UPDATE_PASSWORD"; payload: string }
   | { type: "LOGIN_START" }
-  | { type: "LOGIN_SUCCESS"; payload: { user: PublicUser; sessionId: string } }
+  | { type: "LOGIN_SUCCESS"; payload: { user: PublicUser; token: string } }
   | { type: "LOGIN_ERROR"; payload: LoginError };
 
 const update = (model: Model, action: Action): Model => {
@@ -52,7 +52,6 @@ const update = (model: Model, action: Action): Model => {
 
 @customElement("login-page")
 export class LoginPage extends LitElement {
-  // ✅ FIX: Instantiate the controller with the correct 3 type arguments.
   private ctrl = new SamController<this, Model, Action>(
     this,
     { email: "", password: "", error: null, isLoading: false },
@@ -93,7 +92,6 @@ export class LoginPage extends LitElement {
 
     // 3. Run the effect and get the result
     const result = await runClientPromise(Effect.either(loginEffect));
-
     // 4. Propose the final state change based on the result
     Either.match(result, {
       onLeft: (error) =>
@@ -101,10 +99,8 @@ export class LoginPage extends LitElement {
       onRight: (successPayload) => {
         this.ctrl.propose({ type: "LOGIN_SUCCESS", payload: successPayload });
         // Handle post-success side-effects
-        const { user, sessionId } = successPayload;
-        const expires = new Date();
-        expires.setDate(expires.getDate() + 30);
-        document.cookie = `session_id=${sessionId}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`;
+        const { user, token } = successPayload;
+        localStorage.setItem("jwt", token);
         proposeAuthAction({ type: "SET_AUTHENTICATED", payload: user });
       },
     });
@@ -133,14 +129,14 @@ export class LoginPage extends LitElement {
           <form @submit=${this._handleSubmit}>
             ${NotionInput({
               id: "email",
-              label: "Email",
+              label: "Email", //
               type: "email",
               value: model.email,
               onInput: (e) =>
                 this.ctrl.propose({
                   type: "UPDATE_EMAIL",
                   payload: (e.target as HTMLInputElement).value,
-                }),
+                }), //
               required: true,
             })}
             ${NotionInput({
@@ -152,7 +148,7 @@ export class LoginPage extends LitElement {
                 this.ctrl.propose({
                   type: "UPDATE_PASSWORD",
                   payload: (e.target as HTMLInputElement).value,
-                }),
+                }), //
               required: true,
             })}
             ${errorMessage

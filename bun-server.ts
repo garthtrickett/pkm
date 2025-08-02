@@ -1,3 +1,4 @@
+// FILE: ./bun-server.ts
 import {
   HttpRouter,
   HttpServer,
@@ -22,6 +23,7 @@ import { CryptoLive } from "./src/lib/server/crypto";
 import { S3UploaderLive } from "./src/lib/server/s3";
 import { ConfigLive } from "./src/lib/server/Config";
 import { PokeServiceLive } from "./src/lib/server/PokeService";
+import { JwtServiceLive } from "./src/lib/server/JwtService";
 
 // RPC and Handler Imports
 import { AuthRpc } from "./src/lib/shared/api";
@@ -43,21 +45,38 @@ const allRpcHandlers = {
   ...RpcUserHandlers,
   ...RpcLogHandlers,
 };
-const AppServicesLive = Layer.mergeAll(
+
+// --- THIS IS THE CORRECTED LAYER COMPOSITION ---
+
+// Base services that depend on ConfigLive will now have it provided at the end.
+const BaseServicesLive = Layer.mergeAll(
   DbLayer,
   CryptoLive,
   PokeServiceLive,
   S3UploaderLive,
-  BunFileSystem.layer, // Added for file system access
-  BunPath.layer, // Added for path manipulation
-).pipe(Layer.provide(ConfigLive));
+  BunFileSystem.layer,
+  BunPath.layer,
+);
 
+// AppServicesLive will now require Config, which is okay.
+const AppServicesLive = Layer.provide(JwtServiceLive, BaseServicesLive).pipe(
+  Layer.merge(BaseServicesLive),
+);
+
+// RpcHandlersAndMiddleware defines the layers that provide the RPC implementation.
 const RpcHandlersLive = mergedRpc.toLayer(allRpcHandlers);
 const AppAuthMiddlewareLive = AuthMiddlewareLive;
-const RpcAppLayers = Layer.merge(RpcHandlersLive, AppAuthMiddlewareLive);
+const RpcHandlersAndMiddleware = Layer.merge(
+  RpcHandlersLive,
+  AppAuthMiddlewareLive,
+);
+
+// Create a self-contained layer for the RPC app by providing its dependencies.
+const RpcAppLayers = Layer.provide(RpcHandlersAndMiddleware, AppServicesLive);
 
 // --- Route and Handler Definitions ---
 
+// The rpcApp effect now has its dependencies fully satisfied.
 const rpcApp = Effect.flatten(
   RpcServer.toHttpApp(mergedRpc).pipe(Effect.provide(RpcAppLayers)),
 );
@@ -99,7 +118,6 @@ const staticHandler = Effect.gen(function* (_) {
     }),
   );
 });
-
 // --- Build the Full Application Router ---
 
 const appRouter = HttpRouter.empty.pipe(
@@ -113,12 +131,19 @@ const appRouter = HttpRouter.empty.pipe(
 
 // --- Create and Launch the Final Server ---
 
-const program = HttpServer.serve(appRouter).pipe(
-  Layer.provide(AppServicesLive),
+// ✅ FIX: Combine all application services that might depend on config.
+const FullAppServicesLive = Layer.mergeAll(AppServicesLive, ObservabilityLive);
+
+// ✅ FIX: Create a single, fully-resolved application layer.
+// This layer defines the entire HTTP application and its dependencies.
+const HttpApp = HttpServer.serve(appRouter).pipe(
+  Layer.provide(FullAppServicesLive),
   Layer.provide(RpcSerialization.layerJson),
   Layer.provide(BunHttpServer.layer({ port: 42069 })),
-  Layer.provide(ObservabilityLive),
 );
-const runnable = Layer.launch(program);
+
+// ✅ FIX: Provide the final configuration and then launch the self-contained app.
+// This resolves the TS2769 error because the final effect has no unmet requirements.
+const runnable = Layer.launch(HttpApp.pipe(Layer.provide(ConfigLive)));
 
 BunRuntime.runMain(runnable);

@@ -1,4 +1,4 @@
-// src/features/auth/handlers/password.handler.ts
+// FILE: src/features/auth/handlers/password.handler.ts
 import { Effect } from "effect";
 import { Argon2id } from "oslo/password";
 import { isWithinExpirationDate } from "oslo";
@@ -98,19 +98,11 @@ export const PasswordRpcHandlers = {
         try: () => argon2id.hash(newPassword),
         catch: (cause) => new PasswordHashingError({ cause }),
       });
-
       yield* Effect.promise(() =>
         db
           .updateTable("user")
           .set({ password_hash: newPasswordHash })
           .where("id", "=", storedToken.user_id)
-          .execute(),
-      );
-
-      yield* Effect.promise(() =>
-        db
-          .deleteFrom("session")
-          .where("user_id", "=", storedToken.user_id)
           .execute(),
       );
 

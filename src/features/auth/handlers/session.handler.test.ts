@@ -1,6 +1,6 @@
-// FILE: ./src/features/auth/handlers/session.handler.test.ts
+// FILE: src/features/auth/handlers/session.handler.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "@effect/vitest";
-import { vi } from "vitest"; // Corrected import
+import { vi } from "vitest";
 import { Effect, Layer, Either } from "effect";
 import { Argon2id } from "oslo/password";
 import { SessionRpcHandlers } from "./session.handler";
@@ -8,22 +8,21 @@ import { Db } from "../../../db/DbTag";
 import type { User, UserId } from "../../../lib/shared/schemas.ts";
 import { AuthError } from "../../../lib/shared/auth";
 import { Crypto } from "../../../lib/server/crypto";
+import { JwtService } from "../../../lib/server/JwtService";
 
 // --- Mocks ---
 
-// Use vi.hoisted() to define the mock before imports are resolved
-const { createSessionEffect, deleteSessionEffect } = vi.hoisted(() => {
-  const createSessionEffect = vi.fn(() => Effect.succeed("mock_session_id"));
-  const deleteSessionEffect = vi.fn(() => Effect.void);
-  return { createSessionEffect, deleteSessionEffect };
-});
-
-vi.mock("../../../lib/server/session.service.ts", () => ({
-  createSessionEffect,
-  deleteSessionEffect,
-  validateSessionEffect: vi.fn(),
-  getSessionIdFromRequest: vi.fn(),
+const { mockGenerateToken } = vi.hoisted(() => ({
+  mockGenerateToken: vi.fn(() => Effect.succeed("mock_jwt_token")),
 }));
+
+const MockJwtServiceLive = Layer.succeed(
+  JwtService,
+  JwtService.of({
+    generateToken: mockGenerateToken,
+    validateToken: vi.fn(),
+  }),
+);
 
 const mockUser: User = {
   id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11" as UserId,
@@ -59,6 +58,7 @@ const CryptoTestLive = Layer.succeed(
     verifyPassword: vi.fn(),
   } as any),
 );
+
 describe("Auth Handlers: login", () => {
   beforeEach(() => {
     vi.spyOn(Argon2id.prototype, "verify");
@@ -69,27 +69,32 @@ describe("Auth Handlers: login", () => {
   });
 
   // Test Case 1: Success
-  it.effect("given correct credentials, returns user and session ID", () =>
+  it.effect("given correct credentials, returns user and JWT", () =>
     Effect.gen(function* () {
       vi.mocked(Argon2id.prototype.verify).mockResolvedValue(true);
       const MockDbLive = makeMockDb(mockUser);
       const runnable = SessionRpcHandlers.login({
         email: "test@example.com",
         password: "password123",
-      }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+      }).pipe(
+        Effect.provide(MockDbLive),
+        Effect.provide(CryptoTestLive),
+        Effect.provide(MockJwtServiceLive),
+      );
 
       const result = yield* Effect.either(runnable);
 
       if (Either.isRight(result)) {
-        const { user, sessionId } = result.right;
+        const { user, token } = result.right;
         expect(user.email).toBe(mockUser.email);
-        expect(sessionId).toBe("mock_session_id");
+        expect(token).toBe("mock_jwt_token");
         expect(user).not.toHaveProperty("password_hash");
       } else {
         throw new Error("Expected success but got failure");
       }
     }),
   );
+
   // Test Case 2: Incorrect Password
   it.effect("given incorrect password, fails with Unauthorized error", () =>
     Effect.gen(function* () {
@@ -98,7 +103,11 @@ describe("Auth Handlers: login", () => {
       const runnable = SessionRpcHandlers.login({
         email: "test@example.com",
         password: "wrong_password",
-      }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+      }).pipe(
+        Effect.provide(MockDbLive),
+        Effect.provide(CryptoTestLive),
+        Effect.provide(MockJwtServiceLive),
+      );
 
       const result = yield* Effect.either(runnable);
 
@@ -110,6 +119,7 @@ describe("Auth Handlers: login", () => {
       }
     }),
   );
+
   // Test Case 3: Non-existent Email
   it.effect("given non-existent email, fails with Unauthorized error", () =>
     Effect.gen(function* () {
@@ -117,7 +127,11 @@ describe("Auth Handlers: login", () => {
       const runnable = SessionRpcHandlers.login({
         email: "nouser@example.com",
         password: "password123",
-      }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+      }).pipe(
+        Effect.provide(MockDbLive),
+        Effect.provide(CryptoTestLive),
+        Effect.provide(MockJwtServiceLive),
+      );
 
       const result = yield* Effect.either(runnable);
 
@@ -129,6 +143,7 @@ describe("Auth Handlers: login", () => {
       }
     }),
   );
+
   // Test Case 4: Unverified User
   it.effect(
     "given credentials for an unverified user, fails with Forbidden error",
@@ -140,7 +155,11 @@ describe("Auth Handlers: login", () => {
         const runnable = SessionRpcHandlers.login({
           email: "test@example.com",
           password: "password123",
-        }).pipe(Effect.provide(MockDbLive), Effect.provide(CryptoTestLive));
+        }).pipe(
+          Effect.provide(MockDbLive),
+          Effect.provide(CryptoTestLive),
+          Effect.provide(MockJwtServiceLive),
+        );
 
         const result = yield* Effect.either(runnable);
 

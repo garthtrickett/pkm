@@ -60,11 +60,16 @@ const AppInfoConfig = EffectConfig.all({
   ),
 });
 
+const JwtConfig = EffectConfig.all({
+  secret: EffectConfig.redacted("JWT_SECRET"),
+});
+
 const AppConfigObject = EffectConfig.all({
   neon: NeonConfig,
   s3: S3Config,
   logtail: LogtailConfig,
   app: AppInfoConfig,
+  jwt: JwtConfig,
 });
 
 export class Config extends Context.Tag("app/Config")<

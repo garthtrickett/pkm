@@ -8,24 +8,30 @@ import { Effect, Layer, Metric, Option } from "effect";
 import { Db } from "../../db/DbTag";
 import type { Session } from "../../types/generated/public/Session";
 import { Auth, AuthError, AuthMiddleware } from "../shared/auth";
-import type { User } from "../shared/schemas";
+import type { PublicUser } from "../shared/schemas";
 import { sessionValidationSuccessCounter } from "./metrics";
-// ✅ IMPORT: Import the session logic from the new service file.
-import {
-  getSessionIdFromRequest,
-  validateSessionEffect,
-} from "./session.service";
+import { JwtService } from "./JwtService";
 
 // Re-export for convenience in other server files
 export { Auth, AuthMiddleware, AuthError };
+
+/**
+ * Extracts a Bearer token from the Authorization header.
+ */
+const getBearerTokenFromRequest = (
+  req: HttpServerRequest.HttpServerRequest,
+): Option.Option<string> =>
+  Option.fromNullable(req.headers["authorization"]).pipe(
+    Option.filter((header) => header.startsWith("Bearer ")),
+    Option.map((header) => header.substring(7)),
+  );
 
 // --- LIVE IMPLEMENTATION ---
 export const AuthMiddlewareLive = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
+    const jwtService = yield* JwtService;
     const db = yield* Db;
-    const validate = (sessionId: string) =>
-      validateSessionEffect(sessionId).pipe(Effect.provideService(Db, db));
 
     return ({ clientId, rpc }) => {
       const logic = Effect.gen(function* () {
@@ -33,75 +39,34 @@ export const AuthMiddlewareLive = Layer.effect(
         yield* Effect.logInfo(
           { clientId, rpc: rpcTag },
           "AuthMiddleware triggered",
-        );
+        ); //
 
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const headers = request.headers;
+        const tokenOption = getBearerTokenFromRequest(request);
 
-        // ✅ FIX: Use a type assertion to safely handle the 'any' from JSON.parse
-        const allHeaders = JSON.parse(JSON.stringify(headers)) as Record<
-          string,
-          string
-        >;
-
-        yield* Effect.logInfo(
-          {
-            clientId,
-            rpc: rpcTag,
-            headers: allHeaders,
-          },
-          "[AuthMiddleware] Raw incoming headers from context",
-        );
-
-        const sessionIdOption = getSessionIdFromRequest({ headers });
-
-        yield* Effect.logInfo(
-          {
-            clientId,
-            rpc: rpcTag,
-            cookieHeader: allHeaders.cookie,
-            foundSessionId: Option.isSome(sessionIdOption),
-            sessionIdValue: Option.getOrNull(sessionIdOption),
-          },
-          "[AuthMiddleware] Result of getSessionIdFromRequest",
-        );
-
-        if (Option.isNone(sessionIdOption)) {
+        if (Option.isNone(tokenOption)) {
           return yield* Effect.fail(
             new AuthError({
               _tag: "Unauthorized",
-              message: "No session cookie provided",
+              message: "No authorization token provided",
             }),
           );
         }
 
-        yield* Effect.logInfo(
-          { sessionId: sessionIdOption.value },
-          "[AuthMiddleware] Session ID found, proceeding to validation.",
+        const user = yield* jwtService.validateToken(tokenOption.value).pipe(
+          // Provide the Db service to the validation effect
+          Effect.provideService(Db, db),
         );
-        const { user, session } = yield* validate(sessionIdOption.value);
-
-        if (!user || !session) {
-          return yield* Effect.fail(
-            new AuthError({
-              _tag: "Unauthorized",
-              message: "Invalid or expired session",
-            }),
-          );
-        }
 
         yield* Metric.increment(sessionValidationSuccessCounter);
-        // yield* Effect.logInfo(
-        //   { clientId, userId: user.id, rpc: rpcTag },
-        //   "[AuthMiddleware] SUCCESS: Session validated successfully. Providing Auth service to handler.",
-        // );
-        return { user, session };
+
+        return { user, session: null };
       });
 
       // This cast is safe because the RpcServer's HTTP adapter runs this middleware
       // within a context that already provides HttpServerRequest.
       return logic as Effect.Effect<
-        { user: User; session: Session },
+        { user: PublicUser; session: Session | null },
         AuthError,
         never
       >;
@@ -113,23 +78,12 @@ export const AuthMiddlewareLive = Layer.effect(
 export const httpAuthMiddleware = HttpMiddleware.make((app) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
+    const jwtService = yield* JwtService;
+    const db = yield* Db;
 
-    // ✅ FIX: Use a type assertion to safely handle the 'any' from JSON.parse
-    // const allHeaders = JSON.parse(JSON.stringify(request.headers)) as Record<
-    //   string,
-    //   string
-    // >;
+    const tokenOption = getBearerTokenFromRequest(request);
 
-    // yield* Effect.logDebug(
-    //   { url: request.url, headers: allHeaders },
-    //   "[httpAuthMiddleware] Triggered for HTTP request",
-    // );
-
-    const sessionIdOption = getSessionIdFromRequest({
-      headers: request.headers,
-    });
-
-    if (Option.isNone(sessionIdOption)) {
+    if (Option.isNone(tokenOption)) {
       yield* Effect.logWarning(
         "[httpAuthMiddleware] FAILURE: No session cookie provided.",
       );
@@ -138,36 +92,29 @@ export const httpAuthMiddleware = HttpMiddleware.make((app) =>
       );
     }
 
-    const validationResult = yield* validateSessionEffect(
-      sessionIdOption.value,
+    const user = yield* jwtService.validateToken(tokenOption.value).pipe(
+      Effect.provideService(Db, db),
+      Effect.catchAll((authError) =>
+        Effect.logWarning(
+          "[httpAuthMiddleware] FAILURE: Invalid or expired token.",
+          authError,
+        ).pipe(
+          Effect.andThen(
+            Effect.fail(
+              HttpServerResponse.json(
+                { error: "Unauthorized" },
+                { status: 401 },
+              ),
+            ),
+          ),
+        ),
+      ),
     );
 
-    if (!validationResult.user || !validationResult.session) {
-      yield* Effect.logWarning(
-        "[httpAuthMiddleware] FAILURE: Invalid or expired session.",
-      );
-      return yield* Effect.fail(
-        HttpServerResponse.json(
-          { error: "Unauthorized" },
-          {
-            status: 401,
-            headers: {
-              "Set-Cookie":
-                "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-            },
-          },
-        ),
-      );
-    }
-
     yield* Metric.increment(sessionValidationSuccessCounter);
-    // yield* Effect.logInfo(
-    //   { userId: validationResult.user.id, url: request.url },
-    //   "[httpAuthMiddleware] SUCCESS: Session validated successfully.",
-    // );
     const authService = Auth.of({
-      user: validationResult.user,
-      session: validationResult.session,
+      user: user,
+      session: null,
     });
     return yield* Effect.provideService(app, Auth, authService);
   }),
